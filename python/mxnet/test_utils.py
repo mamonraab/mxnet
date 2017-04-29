@@ -267,7 +267,7 @@ def _parse_location(sym, location, ctx):
                              % (str(set(sym.list_arguments())), str(set(location.keys()))))
     else:
         location = {k: v for k, v in zip(sym.list_arguments(), location)}
-    location = {k: mx.nd.array(v, ctx=ctx) for k, v in location.items()}
+    location = {k: mx.nd.array(v, ctx=ctx) if isinstance(v, np.ndarray) else v for k, v in location.items()}
     return location
 
 
@@ -516,8 +516,8 @@ def check_symbolic_forward(sym, location, expected, rtol=1E-4, atol=None,
         g[:] = 0
 
     executor.forward(is_train=False)
-    outputs = [x.asnumpy() for x in executor.outputs]
 
+    outputs = [x.asnumpy() for x in executor.outputs]
     for output_name, expect, output in zip(sym.list_outputs(), expected, outputs):
         assert_almost_equal(expect, output, rtol, atol,
                             ("EXPECTED_%s"%output_name, "FORWARD_%s"%output_name))

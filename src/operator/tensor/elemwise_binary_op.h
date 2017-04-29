@@ -10,6 +10,7 @@
 #include <vector>
 #include <string>
 #include <utility>
+#include <typeinfo>
 #include "../mshadow_op.h"
 #include "../elemwise_op_common.h"
 
@@ -32,6 +33,105 @@ void BinaryCompute(const nnvm::NodeAttrs& attrs,
   });
 }
 
+// TODO(haibin) This is an inefficient temporary implementation
+// Binary Compute between two row-sparse ndarray
+template<typename xpu, typename OP>
+void BinaryComputeRspRsp(const nnvm::NodeAttrs& attrs,
+                         const OpContext& ctx,
+                         const std::vector<NDArray>& inputs,
+                         const std::vector<OpReqType>& req,
+                         const std::vector<NDArray>& outputs) {
+  CHECK_EQ(inputs.size(), 2);
+  CHECK_EQ(outputs.size(), 1);
+  auto &nd_l = inputs[0];
+  auto &nd_r = inputs[1];
+  auto &output = outputs[0];
+
+  CHECK_EQ(nd_l.storage_type(), kRowSparseStorage) << "Sparse type not supported yet";
+  // Memory Estimation
+  auto num_rows_l = nd_l.aux_shape(rowsparse::kIdx)[0];
+  auto num_rows_r = nd_r.aux_shape(rowsparse::kIdx)[0];
+  // This is (roughly) the number of result rows
+  output.CheckAndAlloc({TShape({num_rows_l + num_rows_r})});
+  // Indices
+  mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
+  MSHADOW_TYPE_SWITCH(output.dtype(), DType, {
+    MSHADOW_TYPE_SWITCH(nd_l.aux_type(rowsparse::kIdx), AuxType, {
+      auto indices_l = nd_l.aux_data(rowsparse::kIdx).FlatTo1D<xpu, AuxType>(s);
+      auto indices_r = nd_r.aux_data(rowsparse::kIdx).FlatTo1D<xpu, AuxType>(s);
+      auto indices_out = output.aux_data(rowsparse::kIdx).FlatTo1D<xpu, AuxType>(s);
+      // Data
+      auto data_l = nd_l.data().FlatTo2D<xpu, DType>(s);
+      auto data_r = nd_r.data().FlatTo2D<xpu, DType>(s);
+      auto out = output.data().FlatTo2D<xpu, DType>(s);
+
+      // TODO(haibin) A more appropriate way: Copy to output, then apply ops
+      size_t iter_l = 0;
+      size_t iter_r = 0;
+      size_t iter_out = 0;
+      int32_t num_common_rows = 0;
+      while (iter_l < num_rows_l && iter_r < num_rows_r) {
+        auto idx_l = indices_l[iter_l];
+        auto idx_r = indices_r[iter_r];
+        if (idx_l == idx_r) {
+          // Same row
+          indices_out[iter_out] = idx_l;
+          mshadow::Copy(out[iter_out], data_l[iter_l++], s);
+          out[iter_out] += data_r[iter_r++];
+          num_common_rows++;
+        } else if (idx_l < idx_r) {
+          // Left only
+          indices_out[iter_out] = idx_l;
+          mshadow::Copy(out[iter_out], data_l[iter_l++], s);
+        } else {
+          // Right only
+          indices_out[iter_out] = idx_r;
+          mshadow::Copy(out[iter_out], data_r[iter_r++], s);
+        }
+        iter_out++;
+      }
+      // Copying over the rest of the rows
+      while (iter_l < num_rows_l) {
+        indices_out[iter_out] = indices_l[iter_l];
+        mshadow::Copy(out[iter_out++], data_l[iter_l++], s);
+      }
+      while (iter_r < num_rows_r) {
+        indices_out[iter_out] = indices_r[iter_r];
+        mshadow::Copy(out[iter_out++], data_r[iter_r++], s);
+      }
+      auto new_shape = output.aux_shape(rowsparse::kIdx);
+      new_shape[0] -= num_common_rows;
+      output.SetAuxShape(rowsparse::kIdx, new_shape);
+    });
+  });
+}
+
+template<typename xpu, typename OP>
+void BinaryComputeEx(const nnvm::NodeAttrs& attrs,
+                         const OpContext& ctx,
+                         const std::vector<NDArray>& inputs,
+                         const std::vector<OpReqType>& req,
+                         const std::vector<NDArray>& outputs) {
+  using namespace mshadow;
+  using namespace mshadow::expr;
+  Stream<xpu> *s = ctx.get_stream<xpu>();
+  CHECK_EQ(inputs.size(), 2);
+  CHECK_EQ(outputs.size(), 1);
+  if (typeid(OP) == typeid(mshadow::op::plus)) {
+    // If any input is dense, fallback to FCompute
+    if (common::ContainsDefaultStorage(inputs)) {
+      FComputeExFallback<xpu>(attrs, ctx, inputs, req, outputs, BinaryCompute<xpu, OP>);
+      return;
+    }
+    CHECK_EQ(inputs[0].storage_type(), kRowSparseStorage) << "Sparse type not supported yet";
+    CHECK_EQ(inputs[1].storage_type(), kRowSparseStorage) << "Sparse type not supported yet";
+    BinaryComputeRspRsp<xpu, Op>(attrs, ctx, inputs, req, outputs);
+    return;
+  } else {
+    LOG(FATAL) << "Not implemented";
+  }
+}
+
 template<typename xpu, typename LOP, typename ROP>
 void BinaryBackwardUseNone(const nnvm::NodeAttrs& attrs,
                            const OpContext& ctx,
@@ -48,6 +148,52 @@ void BinaryBackwardUseNone(const nnvm::NodeAttrs& attrs,
     ASSIGN_DISPATCH(lgrad, req[0], F<LOP>(ograd));
     ASSIGN_DISPATCH(rgrad, req[1], F<ROP>(ograd));
   });
+}
+
+// Only implemented for _backward_add for now
+template<typename xpu, typename LOP, typename ROP>
+void BinaryBackwardUseNoneRsp(const nnvm::NodeAttrs& attrs,
+                           const OpContext& ctx,
+                           const std::vector<NDArray>& inputs,
+                           const std::vector<OpReqType>& req,
+                           const std::vector<NDArray>& outputs) {
+  using namespace mshadow;
+  using namespace mshadow::expr;
+  Stream<xpu> *s = ctx.get_stream<xpu>();
+  CHECK_EQ(inputs[0].storage_type(), kRowSparseStorage);
+  CHECK(typeid(LOP) == typeid(mshadow_op::identity));
+  CHECK(typeid(ROP) == typeid(mshadow_op::identity));
+  TShape shape = inputs[0].aux_shape(rowsparse::kIdx);
+  outputs[0].CheckAndAlloc({shape});
+  outputs[1].CheckAndAlloc({shape});
+  MSHADOW_TYPE_SWITCH(outputs[0].dtype(), DType, {
+    MSHADOW_TYPE_SWITCH(outputs[0].aux_type(rowsparse::kIdx), AuxType, {
+      auto lgrad_idx = outputs[0].aux_data(rowsparse::kIdx).FlatTo1D<xpu, AuxType>(s);
+      auto rgrad_idx = outputs[1].aux_data(rowsparse::kIdx).FlatTo1D<xpu, AuxType>(s);
+      auto ograd_idx = inputs[0].aux_data(rowsparse::kIdx).FlatTo1D<xpu, AuxType>(s);
+      auto lgrad = outputs[0].data().FlatTo1D<xpu, DType>(s);
+      Tensor<xpu, 1, DType> rgrad = outputs[1].data().FlatTo1D<xpu, DType>(s);
+      Tensor<xpu, 1, DType> ograd = inputs[0].data().FlatTo1D<xpu, DType>(s);
+      ASSIGN_DISPATCH(lgrad, req[0], F<LOP>(ograd));
+      ASSIGN_DISPATCH(rgrad, req[1], F<ROP>(ograd));
+      ASSIGN_DISPATCH(lgrad_idx, req[0], F<LOP>(ograd_idx));
+      ASSIGN_DISPATCH(rgrad_idx, req[1], F<ROP>(ograd_idx));
+    });
+  });
+}
+// Only implemented for _backward_add for now
+template<typename xpu, typename LOP, typename ROP>
+void BinaryBackwardUseNoneEx(const nnvm::NodeAttrs& attrs,
+                           const OpContext& ctx,
+                           const std::vector<NDArray>& inputs,
+                           const std::vector<OpReqType>& req,
+                           const std::vector<NDArray>& outputs) {
+  using namespace mshadow;
+  using namespace mshadow::expr;
+  Stream<xpu> *s = ctx.get_stream<xpu>();
+  auto stype = inputs[0].storage_type();
+  CHECK_EQ(stype, kRowSparseStorage) << "Not implemented yet";
+  BinaryBackwardUseNoneRsp<xpu, LOP, ROP>(attrs, ctx, inputs, req, outputs);
 }
 
 template<typename xpu, typename LOP, typename ROP>
@@ -103,7 +249,7 @@ void BinaryBackwardUseIn(const nnvm::NodeAttrs& attrs,
     [](const NodeAttrs& attrs){                                     \
       return std::vector<std::pair<int, int> >{{0, 0}, {1, 0}};     \
     })                                                              \
-  .add_argument("lhs", "NDArray-or-Symbol", "first input")                    \
+  .add_argument("lhs", "NDArray-or-Symbol", "first input")          \
   .add_argument("rhs", "NDArray-or-Symbol", "second input")
 
 }  // namespace op

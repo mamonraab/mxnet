@@ -131,6 +131,31 @@ int MXNDArrayCreate(const mx_uint *shape,
   API_END();
 }
 
+// TODO(haibin) remove this API
+int MXNDArrayCreateSparse(NDArrayHandle data,
+                    mx_uint num_aux,
+                    NDArrayHandle *aux_vec,
+                    const mx_uint *shape,
+                    mx_uint ndim,
+                    int storage_type,
+                    int dev_type,
+                    int dev_id,
+                    int delay_alloc,
+                    int dtype,
+                    NDArrayHandle *out) {
+  API_BEGIN();
+  auto ctx = Context::Create(static_cast<Context::DeviceType>(dev_type), dev_id);
+  std::vector<NDArray> aux_ndarrays;
+  NDArray* data_ptr = reinterpret_cast<NDArray*>(data);
+  for (size_t i = 0; i < num_aux; i++) {
+    NDArray* nd_aux_ptr = reinterpret_cast<NDArray*>(aux_vec[i]);
+    aux_ndarrays.push_back(*nd_aux_ptr);
+  }
+  NDArrayStorageType stype = (NDArrayStorageType) storage_type;
+  *out = new NDArray(*data_ptr, aux_ndarrays, ctx, stype, TShape(shape, shape + ndim));
+  API_END();
+}
+
 int MXNDArrayCreateEx(const mx_uint *shape,
                     mx_uint ndim,
                     int dev_type,
@@ -146,6 +171,29 @@ int MXNDArrayCreateEx(const mx_uint *shape,
       dtype);
   API_END();
 }
+
+int MXNDArrayCreateSparseEx(int storage_type,
+                    const mx_uint *shape,
+                    mx_uint ndim,
+                    int dev_type,
+                    int dev_id,
+                    int delay_alloc,
+                    int dtype,
+                    mx_uint num_aux,
+                    int *aux_type,
+                    NDArrayHandle *out) {
+  API_BEGIN();
+  std::vector<int> aux_types;
+  for (size_t i = 0; i < num_aux; i++) aux_types.push_back(aux_type[i]);
+  *out = new NDArray(
+      NDArrayStorageType(storage_type),
+      TShape(shape, shape + ndim),
+      Context::Create(static_cast<Context::DeviceType>(dev_type), dev_id),
+      delay_alloc != 0,
+      dtype, aux_types);
+  API_END();
+}
+
 
 int MXNDArrayLoadFromRawBytes(const void *buf,
                               size_t size,
@@ -300,6 +348,18 @@ MXNET_DLL int MXNDArrayReshape(NDArrayHandle handle,
   *ptr = static_cast<NDArray*>(handle)->Reshape(new_shape);
   *out = ptr;
   API_END_HANDLE_ERROR(delete ptr);
+}
+
+int MXNDArrayGetStorageType(NDArrayHandle handle,
+                     int *out_storage_type) {
+  API_BEGIN();
+  NDArray *arr = static_cast<NDArray*>(handle);
+  if (!arr->is_none()) {
+    *out_storage_type = arr->storage_type();
+  } else {
+    *out_storage_type = kUndefinedStorage;
+  }
+  API_END();
 }
 
 int MXNDArrayGetShape(NDArrayHandle handle,

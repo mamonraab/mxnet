@@ -28,15 +28,15 @@ from . import _ndarray_internal as _internal
 # When possible, use cython to speedup part of computation.
 try:
     if int(_os.environ.get("MXNET_ENABLE_CYTHON", True)) == 0:
-        from ._ctypes.ndarray import NDArrayBase, _init_ndarray_module
+        from ._ctypes.ndarray import NDArrayBase
     elif _sys.version_info >= (3, 0):
-        from ._cy3.ndarray import NDArrayBase, _init_ndarray_module
+        from ._cy3.ndarray import NDArrayBase
     else:
-        from ._cy2.ndarray import NDArrayBase, _init_ndarray_module
+        from ._cy2.ndarray import NDArrayBase
 except ImportError:
     if int(_os.environ.get("MXNET_ENFORCE_CYTHON", False)) != 0:
         raise ImportError("Cython Module cannot be loaded but MXNET_ENFORCE_CYTHON=1")
-    from ._ctypes.ndarray import NDArrayBase, _init_ndarray_module
+    from ._ctypes.ndarray import NDArrayBase
 
 
 # pylint: disable= no-member
@@ -47,7 +47,6 @@ _DTYPE_NP_TO_MX = {
     np.uint8   : 3,
     np.int32   : 4
 }
-
 _DTYPE_MX_TO_NP = {
     0 : np.float32,
     1 : np.float64,
@@ -55,7 +54,6 @@ _DTYPE_MX_TO_NP = {
     3 : np.uint8,
     4 : np.int32
 }
-# pylint: enable= no-member
 
 def _new_empty_handle():
     """Returns a new empty handle.
@@ -111,6 +109,9 @@ fixed-size items.
         shape_info = 'x'.join(['%d' % x for x in self.shape])
         return '<%s %s @%s>' % (self.__class__.__name__,
                                 shape_info, self.context)
+
+    def __reduce__(self):
+        return (NDArray, (None,), self.__getstate__())
 
     def __add__(self, other):
         """x.__add__(y) <=> x+y <=> mx.nd.add(x, y) """
@@ -592,7 +593,6 @@ fixed-size items.
         """
         check_call(_LIB.MXNDArrayWaitToRead(self.handle))
 
-
     @property
     def ndim(self):
         """Returns the number of dimensions of this array
@@ -627,6 +627,7 @@ fixed-size items.
         check_call(_LIB.MXNDArrayGetShape(
             self.handle, ctypes.byref(ndim), ctypes.byref(pdata)))
         return tuple(pdata[:ndim.value])
+
 
     @property
     def size(self):
@@ -872,7 +873,6 @@ fixed-size items.
             return self
         return self.copyto(context)
 
-_init_ndarray_module(NDArray, "mxnet")
 
 def onehot_encode(indices, out):
     """One-hot encoding indices into matrix out.
@@ -945,7 +945,6 @@ def zeros(shape, ctx=None, dtype=mx_real_t):
     """
     if ctx is None:
         ctx = Context.default_ctx
-    # pylint: disable= no-member, protected-access
     return _internal._zeros(shape=shape, ctx=ctx, dtype=dtype)
     # pylint: enable= no-member, protected-access
 

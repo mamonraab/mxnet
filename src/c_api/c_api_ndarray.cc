@@ -119,16 +119,18 @@ void SetContext(Context* p_ctx,
     ctx = Context::CPU();
   }
 }
-
+// Set the shape, dtype and storage type
 void SetShapeType(const nnvm::Op* op,
                   const nnvm::NodeAttrs& attrs,
                   const Context& ctx,
                   const std::vector<NDArray>& ndinputs,
                   const int& infered_num_outputs,
-                  std::vector<NDArray>* p_ndoutputs) {
+                  std::vector<NDArray>* p_ndoutputs,
+                  int* dispatch_stype) {
   std::vector<NDArray>& ndoutputs = *p_ndoutputs;
   static auto& infershape = nnvm::Op::GetAttr<nnvm::FInferShape>("FInferShape");
   static auto& infertype = nnvm::Op::GetAttr<nnvm::FInferType>("FInferType");
+  static auto& inferstorage = nnvm::Op::GetAttr<nnvm::FInferStorageType>("FInferStorageType");
   MXAPIThreadLocalEntry *ret = MXAPIThreadLocalStore::Get();
   // infer shape
   std::vector<TShape>& in_shapes  = ret->arg_shapes;
@@ -164,9 +166,39 @@ void SetShapeType(const nnvm::Op* op,
   CHECK(infertype[op](attrs, &in_types, &out_types));
   CHECK_EQ(out_types.size(), static_cast<size_t>(infered_num_outputs));
 
+  // infer chunk type
+  auto& in_storage_types = ret->arg_storage_types;
+  auto& out_storage_types = ret->out_storage_types;
+  in_storage_types.clear();
+  out_storage_types.clear();
+
+  for (auto& i : ndinputs) {
+    in_storage_types.push_back(i.storage_type());
+  }
+  for (auto& i : ndoutputs) {
+    out_storage_types.push_back(i.storage_type());
+  }
+  if (inferstorage.count(op)) {
+    CHECK(inferstorage[op](attrs, &in_storage_types, &out_storage_types));
+    CHECK_EQ(out_storage_types.size(), static_cast<size_t>(infered_num_outputs));
+  } else {
+    // LOG(INFO) << "FInferStorageType not present.";
+  }
+
+  bool contains_non_default = common::ContainsNonDefaultStorage(in_storage_types);
+  contains_non_default |= common::ContainsNonDefaultStorage(out_storage_types);
+  int kNonDefaultStorage = -2;
+  *dispatch_stype = contains_non_default ? kNonDefaultStorage : kDefaultStorage;
+
   for (int i = 0; i < infered_num_outputs; ++i) {
+    NDArrayStorageType storage_type = static_cast<NDArrayStorageType>(out_storage_types[i]);
     if (ndoutputs[i].is_none()) {
-      ndoutputs[i] = NDArray(out_shapes[i], ctx, true, out_types[i]);
+      // If failed to infer the storage type, assume the output storage is dense
+      if (storage_type == kDefaultStorage || out_storage_types[i] == kUndefinedStorage) {
+        ndoutputs[i] = NDArray(out_shapes[i], ctx, true, out_types[i]);
+      } else {
+        ndoutputs[i] = NDArray(storage_type, out_shapes[i], ctx, true, out_types[i]);
+      }
     } else {
       CHECK_EQ(ndoutputs[i].shape(), out_shapes[i])
         << i << "th output has invalid shape. "
@@ -213,22 +245,19 @@ void SetDependency(std::vector<engine::VarHandle> *p_read_vars,
     }
     CHECK_LE(ntmp, 1) << "Only support 1 temp space request";
   }
-
-  for (auto& i : ndinputs) {
-    read_vars.push_back(i.var());
-  }
-  for (auto& i : ndoutputs) {
-    write_vars.push_back(i.var());
-  }
+  common::PrepVars(ndinputs, &read_vars);
+  common::PrepVars(ndoutputs, &write_vars);
   if (mutate.count(op)) {
     auxidx = mutate[op](attrs);
     std::sort(auxidx.begin(), auxidx.end());
-    for (auto & i : auxidx) {
-      write_vars.push_back(ndinputs[i].var());
+    for (auto& i : auxidx) {
+      auto var = ndinputs[i].var();
+      write_vars.push_back(var);
     }
   }
   Engine::Get()->DeduplicateVarHandle(&read_vars, &write_vars);
 }
+
 
 void PushFCompute(const FCompute& fn,
                   const nnvm::Op* op,
@@ -245,18 +274,56 @@ void PushFCompute(const FCompute& fn,
         RunContext rctx,
         engine::CallbackOnComplete on_complete) {
       std::vector<TBlob> input_blobs, output_blobs;
-      for (auto& i : ndinputs) {
-        input_blobs.push_back(i.data());
-      }
-      for (auto& i : ndoutputs) {
-        i.CheckAndAlloc();
-        output_blobs.push_back(i.data());
-      }
+      std::vector<NDArray> tmp_nds;
+
       OpContext opctx{is_train, rctx,
                       engine::CallbackOnComplete(),
                       requested};
+      if (ctx.dev_mask() == gpu::kDevMask) {
+#if MXNET_USE_CUDA
+        common::PrepDefaultBlobs<gpu>(ndinputs, ndoutputs, &input_blobs,
+                                      &output_blobs, &tmp_nds, true, opctx);
+#else
+        LOG(FATAL) << MXNET_GPU_NOT_ENABLED_ERROR;
+#endif
+      } else {
+        common::PrepDefaultBlobs<cpu>(ndinputs, ndoutputs, &input_blobs,
+                                      &output_blobs, &tmp_nds, true, opctx);
+      }
       std::vector<OpReqType> req(output_blobs.size(), kWriteTo);
       fn(attrs, opctx, input_blobs, req, output_blobs);
+      if (ctx.dev_mask() == gpu::kDevMask) {
+        rctx.get_stream<gpu>()->Wait();
+      }
+      on_complete();
+    }, ctx, read_vars, write_vars, FnProperty::kNormal,
+    0, PROFILER_MESSAGE(op->name.c_str()));
+}
+
+void PushFComputeEx(const FComputeEx& fn,
+                  const nnvm::Op* op,
+                  const nnvm::NodeAttrs& attrs,
+                  const Context& ctx,
+                  const std::vector<engine::VarHandle>& read_vars,
+                  const std::vector<engine::VarHandle>& write_vars,
+                  const std::vector<Resource>& requested,
+                  const std::vector<NDArray>& ndinputs,
+                  const std::vector<NDArray>& ndoutputs) {
+  Engine::Get()->PushAsync(
+    [ctx, attrs, fn, ndinputs, ndoutputs, requested](
+        RunContext rctx,
+        engine::CallbackOnComplete on_complete) {
+      std::vector<TBlob> input_blobs, output_blobs;
+      for (auto& i : ndoutputs) {
+        if (i.storage_type() == kDefaultStorage) {
+          i.CheckAndAlloc();
+        }
+      }
+      OpContext opctx{false, rctx,
+                      engine::CallbackOnComplete(),
+                      requested};
+      std::vector<OpReqType> req(ndoutputs.size(), kWriteTo);
+      fn(attrs, opctx, ndinputs, req, ndoutputs);
       if (ctx.dev_mask() == gpu::kDevMask) {
         rctx.get_stream<gpu>()->Wait();
       }
@@ -329,8 +396,6 @@ int MXImperativeInvoke(AtomicSymbolCreator creator,
                        int num_params,
                        const char **param_keys,
                        const char **param_vals) {
-  static auto& fcpu = nnvm::Op::GetAttr<FCompute>("FCompute<cpu>");
-  static auto& fgpu = nnvm::Op::GetAttr<FCompute>("FCompute<gpu>");
   static auto& ndfunc = nnvm::Op::GetAttr<FNDArrayFunction>("FNDArrayFunction");
   static auto& createop = nnvm::Op::GetAttr<FCreateLayerOp>("FCreateLayerOp");
   const nnvm::Op* op = static_cast<nnvm::Op*>(creator);
@@ -356,8 +421,9 @@ int MXImperativeInvoke(AtomicSymbolCreator creator,
   } else {
     // TODO(piiswrong): infer ctx
     Context ctx;
+    int storage_type;
     SetContext(&ctx, attrs, num_inputs, ndinputs, infered_num_outputs, ndoutputs);
-    SetShapeType(op, attrs, ctx, ndinputs, infered_num_outputs, &ndoutputs);
+    SetShapeType(op, attrs, ctx, ndinputs, infered_num_outputs, &ndoutputs, &storage_type);
 
     std::vector<engine::VarHandle> read_vars, write_vars;
     std::vector<Resource> requested;
@@ -365,14 +431,12 @@ int MXImperativeInvoke(AtomicSymbolCreator creator,
     SetDependency(&read_vars, &write_vars, &requested, &auxidx,
         op, attrs, ctx, ndinputs, ndoutputs);
 
-    FCompute fn;
-    if (ctx.dev_mask() == cpu::kDevMask && fcpu.count(op)) {
-      fn = fcpu[op];
-    } else if (ctx.dev_mask() == gpu::kDevMask && fgpu.count(op)) {
-      fn = fgpu[op];
-    }
-
-    if (fn) {
+    FCompute fn = common::GetFCompute(op, ctx);
+    FComputeEx fcomp_ex = common::GetFComputeEx(op, ctx, storage_type);
+    if (fcomp_ex) {
+      PushFComputeEx(fcomp_ex, op, attrs, ctx, read_vars, write_vars, requested,
+                     ndinputs, ndoutputs);
+    } else if (fn) {
       if (AutogradRuntime::Get()->IsTraining()) {
         AutogradRuntime::Get()->RecordImperativeFCompute(fn, op,
             attrs, &ndinputs, &ndoutputs);

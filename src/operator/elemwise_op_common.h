@@ -17,6 +17,7 @@
 #include <string>
 #include <utility>
 #include "./operator_common.h"
+#include "../common/utils.h"
 
 namespace mxnet {
 namespace op {
@@ -53,6 +54,44 @@ inline bool ElemwiseAttr(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
+// Only inferring output storage types from input for now
+template<typename AttrType, bool (*is_none)(const AttrType&),
+         bool (*assign)(AttrType*, const AttrType&), bool reverse_infer,
+         bool enable_fallback>
+inline bool ElemwiseStorageAttr(const nnvm::NodeAttrs& attrs,
+                         std::vector<AttrType> *in_attrs,
+                         std::vector<AttrType> *out_attrs) {
+  // LOG(INFO) << "ElemwiseStorageAttr for " << attrs.name;
+  auto deduce = [&](std::vector<AttrType> *vec, const char *name, AttrType& result,
+                    bool fallback) {
+      auto &v = *vec;
+      for (size_t i = 0; i < vec->size(); ++i) {
+        // LOG(INFO) << "deduce " << (*vec)[i];
+        if (v[i] == kUndefinedStorage) {
+          // if input type is unknown, assume it's default storage
+          CHECK(assign(&v[i], kDefaultStorage));
+        } else if (assign(&result, v[i]) == false && fallback) {
+          result = kDefaultStorage;
+        }
+      }
+    };
+  AttrType dattr = kUndefinedStorage;
+  deduce(in_attrs, "input", dattr, enable_fallback);
+  if (reverse_infer) {
+    LOG(FATAL) << "not implemented yet";
+  }
+  auto write = [&](std::vector<AttrType> *vec, const char *name) {
+      for (size_t i = 0; i < vec->size(); ++i) {
+        CHECK(assign(&(*vec)[i], dattr))
+          << "Incompatible attr in node " << attrs.name << " at " << i << "-th "
+          << name << ": " << "expected " << dattr << ", got " << (*vec)[i];
+      }
+    };
+  if (is_none(dattr)) dattr = kDefaultStorage;
+  write(out_attrs, "output");
+  return true;
+}
+
 template<int n_in, int n_out>
 inline bool ElemwiseShape(const nnvm::NodeAttrs& attrs,
                           std::vector<TShape> *in_attrs,
@@ -71,6 +110,25 @@ inline bool ElemwiseType(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(out_attrs->size(), static_cast<size_t>(n_out)) << " in operator " << attrs.name;
   return ElemwiseAttr<int, type_is_none, type_assign, true, type_string>(
     attrs, in_attrs, out_attrs, -1);
+}
+
+template<int n_in, int n_out>
+inline bool ElemwiseStorageType(const nnvm::NodeAttrs& attrs,
+                         std::vector<int> *in_attrs,
+                         std::vector<int> *out_attrs) {
+  CHECK_EQ(in_attrs->size(), static_cast<size_t>(n_in)) << " in operator " << attrs.name;
+  CHECK_EQ(out_attrs->size(), static_cast<size_t>(n_out)) << " in operator " << attrs.name;
+  return ElemwiseStorageAttr<int, type_is_none, type_assign, false, true>(
+    attrs, in_attrs, out_attrs);
+}
+
+inline bool IdentityAttrLikeRhsStorageType(const nnvm::NodeAttrs& attrs,
+                         std::vector<int> *in_attrs,
+                         std::vector<int> *out_attrs) {
+  CHECK_EQ(in_attrs->size(), static_cast<size_t>(2)) << " in operator " << attrs.name;
+  CHECK_EQ(out_attrs->size(), static_cast<size_t>(1)) << " in operator " << attrs.name;
+  return ElemwiseStorageAttr<int, type_is_none, type_assign, false, false>(
+    attrs, in_attrs, out_attrs);
 }
 
 // Transfer gradient and input to FGradient function

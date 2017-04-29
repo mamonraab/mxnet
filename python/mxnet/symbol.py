@@ -18,6 +18,8 @@ from .base import NDArrayHandle, ExecutorHandle, SymbolHandle
 from .base import check_call, MXNetError
 from .context import Context, cpu
 from .ndarray import NDArray, zeros as _nd_zeros, _DTYPE_NP_TO_MX, _DTYPE_MX_TO_NP
+from .sparse_ndarray import zeros as _sparse_nd_zeros
+from .sparse_ndarray import _STORAGE_TYPE_ID_TO_STR, _STORAGE_TYPE_STR_TO_ID
 from .executor import Executor
 from . import _symbol_internal as _internal
 from .attribute import AttrScope
@@ -590,6 +592,91 @@ class Symbol(SymbolBase):
             self.handle, ctypes.byref(size), ctypes.byref(sarr)))
         return [py_str(sarr[i]) for i in range(size.value)]
 
+    def infer_storage_type(self, *args, **kwargs):
+        # TODO(haibin) refactor with dtype
+        # FIXME update doc
+        """Infer the storage type of outputs and arguments of given known types of arguments.
+
+        User can either pass in the known types in positional way or keyword argument way.
+        Tuple of Nones is returned if there is not enough information passed in.
+        An error will be raised if there is inconsistency found in the known types passed in.
+
+        Parameters
+        ----------
+        *args :
+            Provide type of arguments in a positional way.
+            Unknown type can be marked as None
+
+        **kwargs :
+            Provide keyword arguments of known types.
+
+        Returns
+        -------
+        arg_storage_types : list of numpy.dtype or None
+            List of types of arguments.
+            The order is in the same order as list_arguments()
+        out_storage_types : list of numpy.dtype or None
+            List of types of outputs.
+            The order is in the same order as list_outputs()
+        aux_storage_types : list of numpy.dtype or None
+            List of types of outputs.
+            The order is in the same order as list_auxiliary_states()
+        """
+        # pylint: disable=too-many-locals
+        if len(args) != 0 and len(kwargs) != 0:
+            raise ValueError('Can only specify known argument \
+                    types either by positional or kwargs way.')
+        sdata = []
+        if len(args) != 0:
+            keys = None
+            for s in args:
+                if s is not None:
+                    if s not in _STORAGE_TYPE_STR_TO_ID or not isinstance(s, basestring):
+                        raise TypeError('Argument need to be one of '+str(_STORAGE_TYPE_STR_TO_ID))
+                    sdata.append(_STORAGE_TYPE_STR_TO_ID[s])
+                else:
+                    sdata.append(_STORAGE_TYPE_STR_TO_ID['undefined'])
+        else:
+            keys = []
+            for k, v in kwargs.items():
+                if v in _STORAGE_TYPE_STR_TO_ID:
+                    keys.append(c_str(k))
+                    sdata.append(_STORAGE_TYPE_STR_TO_ID[v])
+        arg_storage_type_size = mx_uint()
+        arg_storage_type_data = ctypes.POINTER(ctypes.c_int)()
+        out_storage_type_size = mx_uint()
+        out_storage_type_data = ctypes.POINTER(ctypes.c_int)()
+        aux_storage_type_size = mx_uint()
+        aux_storage_type_data = ctypes.POINTER(ctypes.c_int)()
+        complete = ctypes.c_int()
+        check_call(_LIB.MXSymbolInferStorageType(
+            self.handle,
+            mx_uint(len(sdata)),
+            c_array(ctypes.c_char_p, keys),
+            c_array(ctypes.c_int, sdata),
+            ctypes.byref(arg_storage_type_size),
+            ctypes.byref(arg_storage_type_data),
+            ctypes.byref(out_storage_type_size),
+            ctypes.byref(out_storage_type_data),
+            ctypes.byref(aux_storage_type_size),
+            ctypes.byref(aux_storage_type_data),
+            ctypes.byref(complete)))
+        if complete.value != 0:
+            arg_storage_types = [
+                _STORAGE_TYPE_ID_TO_STR[arg_storage_type_data[i]] \
+                                        for i in range(arg_storage_type_size.value)]
+            out_storage_types = [
+                _STORAGE_TYPE_ID_TO_STR[out_storage_type_data[i]] \
+                                        for i in range(out_storage_type_size.value)]
+            aux_storage_types = [
+                _STORAGE_TYPE_ID_TO_STR[aux_storage_type_data[i]] \
+                                        for i in range(aux_storage_type_size.value)]
+            return (arg_storage_types, out_storage_types, aux_storage_types)
+        else:
+            return (None, None, None)
+        # pylint: enable=too-many-locals
+
+
     def infer_type(self, *args, **kwargs):
         """Infers the type of all arguments and all outputs, given the known types
         for some arguments.
@@ -989,6 +1076,7 @@ class Symbol(SymbolBase):
                     grad_req='write',
                     type_dict=None,
                     group2ctx=None,
+                    storage_type_dict=None,
                     **kwargs):
         """Bind current symbol to get an executor, allocate all the ndarrays needed.
         Allows specifying data types.
@@ -1028,8 +1116,18 @@ class Symbol(SymbolBase):
             attrs = self.attr_dict()
             type_dict = {k: mx_real_t for k in self.list_arguments()
                          if k not in attrs or '__dtype__' not in attrs[k]}
+        if storage_type_dict is None:
+            attrs = self.attr_dict()
+            storage_type_dict = {k: 'default' \
+                if k not in attrs or '__storage_type__' not in attrs[k] \
+                else attrs[k]['__storage_type__'] for k in self.list_arguments()}
         arg_shapes, _, aux_shapes = self.infer_shape(**kwargs)
         arg_types, _, aux_types = self.infer_type(**type_dict)
+        # print(storage_type_dict)
+        arg_storage_types, _, _ = \
+            self.infer_storage_type(**storage_type_dict)
+        # print("arg_storage_types", arg_storage_types)
+        # print("out_storage_types", out_storage_types)
 
         if arg_shapes is None or arg_types is None:
             raise ValueError("Input node is not complete")
@@ -1048,8 +1146,12 @@ class Symbol(SymbolBase):
 
         # alloc space
         arg_ndarrays = [
-            _nd_zeros(shape, dev, dtype=dtype)
-            for dtype, dev, shape in zip(arg_types, arg_ctx, arg_shapes)]
+            # avoid allocating dense ndarrays for sparse inputs
+            _nd_zeros(shape, dev, dtype=dtype) if storage_type != 'row_sparse'
+            else _sparse_nd_zeros(shape, storage_type, dev, dtype=dtype)
+            for dtype, dev, shape, storage_type in \
+                zip(arg_types, arg_ctx, arg_shapes, arg_storage_types)]
+        # print(arg_ndarrays)
         if grad_req != 'null':
             grad_ndarrays = {}
             for name, shape, dev, dtype in zip(
@@ -1265,7 +1367,8 @@ class Symbol(SymbolBase):
 
 
 
-def var(name, attr=None, shape=None, lr_mult=None, wd_mult=None, dtype=None, init=None, **kwargs):
+def var(name, attr=None, shape=None, lr_mult=None, wd_mult=None, dtype=None,
+        init=None, storage_type=None, **kwargs):
     """Create a symbolic variable with specified name.
 
     Parameters
@@ -1310,6 +1413,8 @@ def var(name, attr=None, shape=None, lr_mult=None, wd_mult=None, dtype=None, ini
         attr['__dtype__'] = str(_DTYPE_NP_TO_MX[_numpy.dtype(dtype).type])
     if init is not None:
         attr['__init__'] = init.dumps()
+    if storage_type is not None:
+        attr['__storage_type__'] = str(storage_type)
     for k, v in kwargs.items():
         if k.startswith('__') and k.endswith('__'):
             attr[k] = str(v)

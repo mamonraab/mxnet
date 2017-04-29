@@ -223,6 +223,21 @@ MXNET_DLL int MXNDArrayCreate(const mx_uint *shape,
                               NDArrayHandle *out);
 
 /*!
+ * \brief create a NDArray with specified sparse type, shape and aux data(e.g. index)
+ * aux data is copied during construction.
+ */
+MXNET_DLL int MXNDArrayCreateSparse(NDArrayHandle data,
+                    mx_uint num_aux,
+                    NDArrayHandle *aux_data,
+                    const mx_uint *shape,
+                    mx_uint ndim,
+                    int storage_type,
+                    int dev_type,
+                    int dev_id,
+                    int delay_alloc,
+                    int dtype,
+                    NDArrayHandle *out);
+/*!
  * \brief create a NDArray with specified shape and data type
  * \param shape the pointer to the shape
  * \param ndim the dimension of the shape
@@ -241,6 +256,22 @@ MXNET_DLL int MXNDArrayCreateEx(const mx_uint *shape,
                               int delay_alloc,
                               int dtype,
                               NDArrayHandle *out);
+
+
+/*!
+ * \brief create an empty sparse NDArray with specified shape and data type
+ */
+MXNET_DLL int MXNDArrayCreateSparseEx(int storage_type,
+                    const mx_uint *shape,
+                    mx_uint ndim,
+                    int dev_type,
+                    int dev_id,
+                    int delay_alloc,
+                    int dtype,
+                    mx_uint num_aux,
+                    int *aux_types,
+                    NDArrayHandle *out);
+
 /*!
  * \brief create a NDArray handle that is loaded from raw bytes.
  * \param buf the head of the raw bytes
@@ -363,6 +394,13 @@ MXNET_DLL int MXNDArraySlice(NDArrayHandle handle,
 MXNET_DLL int MXNDArrayAt(NDArrayHandle handle,
                           mx_uint idx,
                           NDArrayHandle *out);
+
+/*!
+ * \brief get the storage type of the array
+ */
+MXNET_DLL int MXNDArrayGetStorageType(NDArrayHandle handle,
+                                    int *out_storage_type);
+
 /*!
  * \brief Reshape the NDArray.
  * \param handle the handle to the narray
@@ -932,6 +970,25 @@ MXNET_DLL int MXSymbolInferType(SymbolHandle sym,
                                 mx_uint *aux_type_size,
                                 const int **aux_type_data,
                                 int *complete);
+
+
+
+
+/*!
+ * \brief infer storage type of unknown input types given the known one.
+ */
+MXNET_DLL int MXSymbolInferStorageType(SymbolHandle sym,
+                      mx_uint num_args,
+                      const char** keys,
+                      const int *arg_storage_type_data,
+                      mx_uint *in_storage_type_size,
+                      const int **in_storage_type_data,
+                      mx_uint *out_storage_type_size,
+                      const int **out_storage_type_data,
+                      mx_uint *aux_storage_type_size,
+                      const int **aux_storage_type_data,
+                      int *complete);
+
 //--------------------------------------------
 // Part 4: Executor interface
 //--------------------------------------------

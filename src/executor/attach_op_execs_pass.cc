@@ -13,6 +13,9 @@
 #include "../operator/mkl/mkl_memory-inl.h"
 #include "../operator/mkl/mkl_util-inl.h"
 #endif
+#include "../common/utils.h"
+
+#define EXEC_DISPATCH_DEBUG 0
 namespace mxnet {
 
 namespace op {
@@ -24,7 +27,7 @@ namespace exec {
 // forward executor
 class ForwardOpExecutor : public OpExecutor {
  public:
-  void Run(RunContext rctx) override {
+  void Run(RunContext rctx, bool is_gpu) override {
     op_ctx.run_ctx = rctx;
     op_->Forward(op_ctx, in_data_, req, out_data_, aux_data_);
 #if MKL_EXPERIMENTAL == 1
@@ -67,7 +70,7 @@ class ForwardOpExecutor : public OpExecutor {
 // backward executor
 class BackwardOpExecutor : public OpExecutor {
  public:
-  void Run(RunContext rctx) override {
+  void Run(RunContext rctx, bool is_gpu) override {
     op_ctx.run_ctx = rctx;
     op_->Backward(op_ctx, out_grad_, in_data_, out_data_,
                   req, in_grad_, aux_data_);
@@ -135,8 +138,22 @@ class BackwardOpExecutor : public OpExecutor {
 // fcompute executor executor
 class FComputeExecutor : public OpExecutor {
  public:
-  void Run(RunContext rctx) override {
+  void Run(RunContext rctx, bool is_gpu) override {
     op_ctx.run_ctx = rctx;
+    if (!initialized) {
+      if (is_gpu) {
+#if MXNET_USE_CUDA
+        common::PrepDefaultBlobs<gpu>(in_array, out_array, &in_data_,
+                                      &out_data_, &tmp_nds_, true, op_ctx);
+#else
+        LOG(FATAL) << MXNET_GPU_NOT_ENABLED_ERROR;
+#endif
+      } else {
+        common::PrepDefaultBlobs<cpu>(in_array, out_array, &in_data_,
+                                      &out_data_, &tmp_nds_, true, op_ctx);
+      }
+      initialized = true;
+    }
     fcompute_(attrs_, op_ctx, in_data_, req, out_data_);
 #if MKL_EXPERIMENTAL == 1
     mkl_tblobs_prv_to_cpu(in_data_);
@@ -144,13 +161,8 @@ class FComputeExecutor : public OpExecutor {
 #endif
   }
   void Setup() override {
-    in_data_.resize(in_array.size());
-    out_data_.resize(out_array.size());
-    auto get_blob =  [](const NDArray& nd) {
-      return nd.data();
-    };
-    std::transform(in_array.begin(), in_array.end(), in_data_.begin(), get_blob);
-    std::transform(out_array.begin(), out_array.end(), out_data_.begin(), get_blob);
+    in_array_ = in_array;
+    out_array_ = out_array;
   }
   Operator::ExecType exec_type() const override {
     return Operator::kSync;
@@ -159,28 +171,42 @@ class FComputeExecutor : public OpExecutor {
       : fcompute_(fcompute), attrs_(attrs) {
   }
 
-  static FCompute GetFCompute(const Op* op, Context ctx) {
-    static auto& fcompute_cpu = nnvm::Op::GetAttr<FCompute>("FCompute<cpu>");
-    static auto& fcompute_gpu = nnvm::Op::GetAttr<FCompute>("FCompute<gpu>");
-    if (ctx.dev_mask() == cpu::kDevMask) {
-      return fcompute_cpu.get(op, nullptr);
-    } else if (ctx.dev_mask() == gpu::kDevMask) {
-      return fcompute_gpu.get(op, nullptr);
-    } else {
-      LOG(FATAL) << "Unknown device mask";
-      return nullptr;
-    }
-  }
-
  private:
   FCompute fcompute_;
   NodeAttrs attrs_;
   std::vector<TBlob> in_data_, out_data_;
+  std::vector<NDArray> in_array_, out_array_, tmp_nds_;
+  bool initialized = false;
+};
+
+// fcomputend executor
+class FComputeExExecutor : public OpExecutor {
+ public:
+  void Run(RunContext rctx, bool is_gpu) override {
+    op_ctx.run_ctx = rctx;
+    fcompute_(attrs_, op_ctx, in_data_, req, out_data_);
+  }
+  void Setup() override {
+    in_data_ = in_array;
+    out_data_ = out_array;
+  }
+  Operator::ExecType exec_type() const override {
+    return Operator::kSync;
+  }
+  explicit FComputeExExecutor(FComputeEx fcompute, const NodeAttrs& attrs)
+      : fcompute_(fcompute), attrs_(attrs) {
+  }
+
+ private:
+  FComputeEx fcompute_;
+  NodeAttrs attrs_;
+  std::vector<NDArray> in_data_, out_data_;
 };
 
 // pass to attach operator executors
 Graph AttachOpExecs(Graph g) {
   using nnvm::DTypeVector;
+  using nnvm::StorageTypeVector;
   using nnvm::ShapeVector;
   using nnvm::FMutateInputs;
 
@@ -193,6 +219,7 @@ Graph AttachOpExecs(Graph g) {
   const auto& vctx = g.GetAttr<ContextVector>("context");
   const auto& saved_opr = g.GetAttr<
     std::unordered_map<const nnvm::Node*, std::shared_ptr<Operator>>>("saved_opr");
+  const auto& dispatch_stypes = g.GetAttr<StorageTypeVector>("dispatch_storage_types");
 
   // get the graph
   const auto& idx = g.indexed_graph();
@@ -206,7 +233,12 @@ Graph AttachOpExecs(Graph g) {
     if (fmutate_inputs.count(inode.source->op())) {
       mutate_index = fmutate_inputs[inode.source->op()](inode.source->attrs);
     }
-    FCompute fcompute = FComputeExecutor::GetFCompute(inode.source->op(), vctx[i]);
+    FCompute fcompute = common::GetFCompute(inode.source->op(), vctx[i]);
+    FComputeEx fcompute_ex =
+      common::GetFComputeEx(inode.source->op(), vctx[i], dispatch_stypes[i]);
+#if EXEC_DISPATCH_DEBUG
+    LOG(INFO) << "dispatch type = " << dispatch_stypes[i];
+#endif
     if (fcreate_layer_op.count(inode.source->op())) {
       std::vector<TShape> ishape;
       std::vector<int> itype;
@@ -231,10 +263,16 @@ Graph AttachOpExecs(Graph g) {
           dynamic_cast<ForwardOpExecutor*>(ret[fwd_id].get())->op_,
           mxnet::op::OpPropGetOpProperty(inode.source->attrs),
           mutate_index);
+    } else if (fcompute_ex != nullptr) {
+#if EXEC_DISPATCH_DEBUG
+      LOG(INFO) << "FComputeEx for op " << inode.source->op()->name;
+#endif
+      ret[i] = std::make_shared<FComputeExExecutor>(fcompute_ex, inode.source->attrs);
     } else if (fcompute != nullptr) {
+#if EXEC_DISPATCH_DEBUG
+      LOG(INFO) << "FCompute for op " << inode.source->op()->name;
+#endif
       ret[i] = std::make_shared<FComputeExecutor>(fcompute, inode.source->attrs);
-    } else {
-      LOG(INFO) << "FCompute not registered " << inode.source->op()->name;
     }
   }
   g.attrs["op_execs"] = std::make_shared<nnvm::any>(ret);
