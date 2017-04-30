@@ -214,9 +214,10 @@ class NDArray {
   inline TBlob aux_data(size_t i) const {
     CHECK(storage_type() != kDefaultStorage);
     TBlob res;
+    CHECK(i < ptr_->aux_handles.size());
     MSHADOW_TYPE_SWITCH(aux_type(i), DType, {
       res = TBlob(static_cast<DType*>(ptr_->aux_handles[i].dptr), aux_shape(i),
-                 ptr_->aux_handles[i].ctx.dev_mask(), aux_type(i));
+                  ptr_->aux_handles[i].ctx.dev_mask(), aux_type(i));
     });
 #if MKL_EXPERIMENTAL == 1
     res.Mkl_mem_ = Mkl_mem_;
@@ -559,63 +560,59 @@ class NDArray {
       shandle.ctx = ctx_;
       if (!delay_alloc_) this->CheckAndAlloc();
     }
+    // construct a chunk by copying over data
     Chunk(const NDArray &nd, const std::vector<NDArray> &nd_aux, Context ctx_,
           NDArrayStorageType storage_type_)
         : static_data(false), delay_alloc(false), storage_type(storage_type_), ctx(ctx_) {
       // Vars
       var = Engine::Get()->NewVariable();
+      // Single threaded copy may not saturate memory bandwidth
+      // Aux shapes, types and storage
+      for (size_t i = 0; i < nd_aux.size(); i++) {
+        const auto &aux_d = nd_aux[i].data();
+        aux_types.emplace_back(aux_d.type_flag_);
+        // Empty. Skip copy
+        if (aux_d.shape_.ndim() == 0) continue;
+        CheckAndAllocAuxData(i, aux_d.shape_);
+        // Copy aux data
+        CHECK_EQ(nd_aux[i].storage_type(), kDefaultStorage);
+        TBlob aux_blob(aux_handles[i].dptr, aux_shapes[i], ctx.dev_mask(), aux_types[i]);
+        NDArray aux_wrapper(aux_blob, ctx.dev_id, var);
+        CopyFromTo(nd_aux[i], &aux_wrapper, 0, false);
+      }
       // Data Storage
       const auto &data = nd.data();
-      storage_shape = data.shape_;
-      shandle.ctx = ctx;
-      shandle.size = data.shape_.Size() * mshadow::mshadow_sizeof(data.type_flag_);
-      shandle = Storage::Get()->Alloc(shandle.size, shandle.ctx);
-
-      // Copy data
-      // Single threaded copy may not saturate memory bandwidth
+      // Empty. Skip Copy
+      if (data.shape_.ndim() == 0) return;
+      CheckAndAllocData(data.shape_, data.type_flag_);
       CHECK_EQ(nd.storage_type(), kDefaultStorage);
       auto data_blob = TBlob(shandle.dptr, storage_shape, shandle.ctx.dev_mask(), data.type_flag_);
       NDArray data_wrapper(data_blob, ctx.dev_id, var);
       CopyFromTo(nd, &data_wrapper, 0, false);
-
-      // Aux shapes, types and storage
-      CHECK_GT(storage_shape.ndim(), 0);
-      for (size_t i = 0; i < nd_aux.size(); i++) {
-        const auto &aux_d = nd_aux[i].data();
-        aux_shapes.emplace_back(aux_d.shape_);
-        aux_types.emplace_back(aux_d.type_flag_);
-        Storage::Handle aux_handle;
-        aux_handle.ctx = ctx;
-        aux_handle.size = aux_shapes[i].Size() * mshadow::mshadow_sizeof(aux_types[i]);
-        aux_handle = Storage::Get()->Alloc(aux_handle.size, aux_handle.ctx);
-        aux_handles.emplace_back(aux_handle);
-        // Copy aux data
-        CHECK_EQ(nd_aux[i].storage_type(), kDefaultStorage);
-        TBlob aux_blob(aux_handle.dptr, aux_shapes[i], ctx.dev_mask(), aux_types[i]);
-        NDArray aux_wrapper(aux_blob, ctx.dev_id, var);
-        CopyFromTo(nd_aux[i], &aux_wrapper, 0, false);
-      }
     }
 
     Chunk(const TBlob &data, int dev_id, Engine::VarHandle shared_var)
         : static_data(true), delay_alloc(false) {
       CHECK(storage_type == kDefaultStorage);
+      // init var
       if (shared_var == nullptr) {
         var = Engine::Get()->NewVariable();
       } else {
         skip_delete_var = true;
         var = shared_var;
       }
+      // init ctx
       if (data.dev_mask_ == cpu::kDevMask) {
-        shandle.ctx = Context::CPU();
+        ctx = Context::CPU();
       } else {
         CHECK_EQ(data.dev_mask_, gpu::kDevMask);
-        shandle.ctx = Context::GPU(dev_id);
+        ctx = Context::GPU(dev_id);
       }
+      // init shandle
+      shandle.ctx = ctx;
       shandle.dptr = data.dptr_;
       shandle.size = data.shape_.Size() * mshadow::mshadow_sizeof(data.type_flag_);
       storage_shape = data.shape_;
-      CHECK_GE(storage_shape.ndim(), 0);
     }
     Chunk(Context ctx_, bool delay_alloc_, std::vector<int> aux_types_,
           NDArrayStorageType storage_type_)
@@ -649,23 +646,29 @@ class NDArray {
         CheckAndAllocData(storage_shape, dtype);
       }
     }
+    // create storage handle for data based on shape and dtype, assuming ctx is set
+    // shandle and storage shape are updated
     inline void CheckAndAllocData(const TShape &shape, int dtype) {
       CHECK_NE(aux_shapes.size(), 0) << "data is expected to be allocated after aux_data";
+      // init shape
       storage_shape = shape;
+      // init storage
       auto dbytes = shape.Size() * mshadow::mshadow_sizeof(dtype);
       shandle = Storage::Get()->Alloc(dbytes, ctx);
       // delay_alloc is only set when data storage handle is present
       delay_alloc = false;
     }
+    // create storage handle for aux data based on shape, assuming ctx and aux type are set
+    // aux_handle and aux shape are updated
     inline void CheckAndAllocAuxData(size_t i, const TShape &shape) {
       CHECK_EQ(aux_shapes.size(), aux_handles.size());
       if (aux_shapes.size() <= i) {
         aux_shapes.resize(i + 1);
         aux_handles.resize(i + 1);
       }
-      // Initialize shape
+      // init shape
       aux_shapes[i] = shape;
-      // Init aux storage
+      // init aux storage
       Storage::Handle aux_handle;
       if (storage_type == kRowSparseStorage) {
         auto aux_bytes = shape[0] * mshadow::mshadow_sizeof(aux_types[i]);
