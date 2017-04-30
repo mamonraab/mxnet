@@ -194,17 +194,18 @@ class SparseNDArray(NDArray):
     def to_dense(self):
         return to_dense(self)
 
-#TODO We need a to_dense method to test it
-def csr(values, indptr, idx, shape, ctx=Context.default_ctx, dtype=mx_real_t, aux_types=None):
-    ''' constructor '''
+# TODO Not tested yet. We need a to_dense method to test it
+# TODO create an empty handle with specified types, then assign values
+def csr(values, indptr, idx, shape, ctx=Context.default_ctx, dtype=mx_real_t, aux_types=[np.int32, np.int32]):
+    ''' csr constructor '''
     hdl = NDArrayHandle()
     #TODO currently only supports NDArray input
     assert(isinstance(values, NDArray))
     assert(isinstance(index, NDArray))
     indices = c_array(NDArrayHandle, [idx.handle, indptr.handle])
     num_aux = mx_uint(2)
-    # TODO create an empty handle with specified types, then assign values
-    assert(aux_types is None)
+    assert(aux_type[0] == indptr.dtype)
+    assert(aux_type[1] == idx.dtype)
     check_call(_LIB.MXNDArrayCreateSparse(
         values.handle, num_aux, indices,
         c_array(mx_uint, shape),
@@ -218,16 +219,15 @@ def csr(values, indptr, idx, shape, ctx=Context.default_ctx, dtype=mx_real_t, au
     return SparseNDArray(hdl)
 
 # pylint: enable= no-member
-def row_sparse(values, index, shape, ctx=Context.default_ctx, dtype=mx_real_t, aux_types=None):
-    ''' constructor '''
+# TODO(haibin) create an empty handle with specified types, then assign values
+def row_sparse(values, index, shape, ctx=Context.default_ctx, dtype=mx_real_t, aux_type=np.int32):
+    ''' rsp constructor which only accepts NDArray as input '''
     hdl = NDArrayHandle()
     assert(isinstance(values, NDArray))
     assert(isinstance(index, NDArray))
     indices = c_array(NDArrayHandle, [index.handle])
     num_aux = mx_uint(1)
-    assert(aux_types is None)
-    #TODO(haibin) also specify aux_types
-    # TODO create an empty handle with specified types, then assign values
+    assert(aux_type == index.dtype)
     check_call(_LIB.MXNDArrayCreateSparse(
         values.handle, num_aux, indices,
         c_array(mx_uint, shape),
@@ -240,22 +240,30 @@ def row_sparse(values, index, shape, ctx=Context.default_ctx, dtype=mx_real_t, a
         ctypes.byref(hdl)))
     return SparseNDArray(hdl)
 
-def array(values, index_list, storage_type, shape, ctx=None, dtype=mx_real_t, aux_types=None):
-    ''' constructor '''
-    # TODO check input array types. Assume NDArray class for now
-    # TODO support other types
-    # TODO also specify auxtypes
-    assert(storage_type == 'row_sparse')
-    if not isinstance(values, NDArray):
-        values = ndarray.array(values)
-    for i, index in enumerate(index_list):
+def array(value, indices, storage_type, shape, ctx=None, dtype=mx_real_t, aux_types=None):
+    ''' general constructor interface for csr and rsp
+        always convert numpy array to ndarray before creating a sparse ndarray(temporarily)
+        if aux_types are not provided, the default aux_type is the dtype of the source array
+    '''
+
+    aux_types = [None] * 2 if aux_types is None else aux_types
+    indices = indices if isinstance(indices, (list, tuple)) else [indices]
+    if not isinstance(value, NDArray):
+        value = ndarray.array(value, dtype = dtype)
+    for i, index in enumerate(indices):
         if not isinstance(index, NDArray):
-            index_list[i] = ndarray.array(index)
+            aux_types[i] = index.dtype.type if aux_types[i] is None else aux_types[i]
+            indices[i] = ndarray.array(index, dtype = aux_types[i])
+        else:
+            aux_types[i] = index.dtype if aux_types[i] is None else aux_types[i]
     if isinstance(shape, int):
         shape = (shape, )
     if ctx is None:
         ctx = Context.default_ctx
-    arr = row_sparse(values, index_list[0], shape, ctx=ctx, dtype=dtype, aux_types=aux_types)
+    if storage_type == 'row_sparse':
+        arr = row_sparse(value, indices[0], shape, ctx=ctx, dtype=dtype, aux_type=aux_types[0])
+    else:
+        raise Exception('Not implemented for SparseND yet!')
     return arr
 
 def to_dense(source):

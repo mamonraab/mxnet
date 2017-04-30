@@ -64,6 +64,30 @@ def random_arrays(*shapes):
         return arrays[0]
     return arrays
 
+# TODO(haibin) also include types in arguments
+def random_sparse_ndarray(shape, storage_type, sparsity = 0.5, allow_zeros = False):
+    """Generate a random sparse ndarray."""
+    if storage_type == 'row_sparse':
+        # TODO(haibin) support high dim sparse ndarray
+        assert(len(shape) < 3)
+        prod = np.prod(shape)
+        # sample idx
+        idx_sample = np.random.rand(shape[0])
+        idx = np.argwhere(idx_sample > sparsity).flatten().astype(np.int32)
+        if idx.shape[0] == 0:
+            if allow_zeros:
+                return mx.sparse_nd.zeros(shape, 'row_sparse')
+            idx = np.array([0]).astype(np.int32)
+        # generate random values
+        num_rows = idx.shape[0]
+        num_cols = long(prod / shape[0])
+        value = np.random.rand(num_rows, num_cols).astype(np.float32)
+        indices = [idx]
+    else:
+        raise Exception('Not implemented for SparseND yet!')
+    arr = mx.sparse_nd.array(value, indices, storage_type, shape)
+    return arr
+
 
 def np_reduce(dat, axis, keepdims, numpy_reduce_func):
     """Compatible reduce for old version of NumPy.
