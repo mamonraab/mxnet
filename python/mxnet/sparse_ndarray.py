@@ -24,7 +24,8 @@ from .base import mx_uint, NDArrayHandle, check_call
 from .context import Context
 from . import _ndarray_internal as _internal
 from . import ndarray
-from .ndarray import _DTYPE_NP_TO_MX#, _DTYPE_MX_TO_NP
+from .ndarray import _DTYPE_NP_TO_MX, _DTYPE_MX_TO_NP
+from .ndarray import _STORAGE_TYPE_ID_TO_STR, _STORAGE_TYPE_STR_TO_ID
 from .ndarray import NDArray
 
 # Use different verison of SymbolBase
@@ -40,21 +41,6 @@ except ImportError:
     if int(_os.environ.get("MXNET_ENFORCE_CYTHON", False)) != 0:
         raise ImportError("Cython Module cannot be loaded but MXNET_ENFORCE_CYTHON=1")
     from ._ctypes.ndarray import _init_ndarray_module
-
-# pylint: enable= no-member
-_STORAGE_TYPE_ID_TO_STR = {
-    -1 : 'undefined',
-    0  : 'default',
-    1  : 'row_sparse',
-    2  : 'csr',
-}
-
-_STORAGE_TYPE_STR_TO_ID = {
-    'undefined'  : -1,
-    'default'    : 0,
-    'row_sparse' : 1,
-    'csr'        : 2,
-}
 
 _STORAGE_AUX_TYPES = {
     'row_sparse' : [np.int32],
@@ -161,6 +147,11 @@ class SparseNDArray(NDArray):
         raise Exception('Not implemented for SparseND yet!')
     def broadcast_to(self, shape):
         raise Exception('Not implemented for SparseND yet!')
+    def aux_type(self, i):
+        aux_type = ctypes.c_int()
+        check_call(_LIB.MXNDArrayGetAuxType(
+                   self.handle, i, ctypes.byref(aux_type)))
+        return _DTYPE_MX_TO_NP[aux_type.value]
     #def wait_to_read(self):
     #@property
     #def shape(self):
@@ -172,6 +163,11 @@ class SparseNDArray(NDArray):
     #def context(self):
     #@property
     #def dtype(self):
+    @property
+    def num_aux(self):
+        num_aux = mx_uint()
+        check_call(_LIB.MXNDArrayGetNumAux(self.handle, ctypes.byref(num_aux)))
+        return num_aux.value
     @property
     # pylint: disable= invalid-name, undefined-variable
     def T(self):

@@ -11,7 +11,7 @@ def check_sparse_nd_elemwise_binary(shapes, storage_types, f, g):
     nds = []
     for i, storage_type in enumerate(storage_types):
         if storage_type == 'row_sparse':
-            nd = random_sparse_ndarray(shapes[i], storage_type, allow_zeros = False)
+            nd = random_sparse_ndarray(shapes[i], storage_type, allow_zeros = True)
         elif storage_type == 'default':
             nd = mx.nd.array(random_arrays(shapes[i]), dtype = np.float32)
         else:

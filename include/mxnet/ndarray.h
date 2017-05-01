@@ -254,12 +254,16 @@ class NDArray {
     return dtype_;
   }
   inline int aux_type(size_t i) const {
-    CHECK(ptr_ != nullptr);
+    CHECK(!is_none());
     return ptr_->aux_types[i];
   }
   inline NDArrayStorageType storage_type() const {
     if (is_none()) return kUndefinedStorage;
     return ptr_->storage_type;
+  }
+  inline size_t num_aux() const {
+    if (is_none()) return 0;
+    return ptr_->aux_handles.size();
   }
   /*! \return whether this ndarray is not initialized */
   inline bool is_none() const {
@@ -533,10 +537,12 @@ class NDArray {
      * \brief if this is true, this means the data do not come
      * from Storage, and do not need to be freed
      */
+    /*! \brief construct from static data */
     bool static_data;
     /*! \brief whether allocation is delayed. */
     bool delay_alloc;
-    /*! \brief construct from static data */
+    // the type of the storage. The storage_type is never kUndefinedStorage once the chunk
+    // is constructed.
     NDArrayStorageType storage_type = kDefaultStorage;
     /*! \brief type of aux */
     std::vector<int> aux_types;
