@@ -60,14 +60,25 @@ def test_sparse_nd_zeros():
     sparse_zero = mx.sparse_nd.zeros((2,2), 'row_sparse')
     assert_almost_equal(sparse_zero.asnumpy(), zero.asnumpy())
 
-def test_sparse_nd_copyto():
-    zero = mx.nd.zeros((2,2))
-    e = mx.nd.ones((2,2))
-    zero.copyto(e)
+def check_sparse_nd_copy(storage_type):
+    c = random_sparse_ndarray((10, 10), storage_type, allow_zeros = True)
+    d = c.copyto(mx.Context('cpu', 0))
+    assert np.sum(np.abs(c.asnumpy() != d.asnumpy())) == 0.0
+
+def test_sparse_nd_copy():
+    check_sparse_nd_copy('row_sparse')
+
+def test_sparse_nd_property():
+    storage_type = 'row_sparse'
+    a = random_sparse_ndarray((10, 10), storage_type, allow_zeros = True)
+    assert(a.num_aux == 1)
+    assert(a.aux_type(0) == np.int32)
+    assert(a.storage_type == 'row_sparse')
 
 if __name__ == '__main__':
     test_sparse_nd_conversion()
     test_sparse_nd_zeros()
-    test_sparse_nd_copyto()
     test_sparse_nd_elementwise_fallback()
     test_sparse_nd_elemwise_add()
+    test_sparse_nd_copy()
+    test_sparse_nd_property()

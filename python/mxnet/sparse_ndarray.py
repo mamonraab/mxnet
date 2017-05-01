@@ -172,6 +172,14 @@ class SparseNDArray(NDArray):
     # pylint: disable= invalid-name, undefined-variable
     def T(self):
         raise Exception('Not implemented for SparseND yet!')
+    # TODO(haibin) Should this be a property?
+    def aux_types(self):
+        aux_types = []
+        num_aux = self.num_aux
+        for i in xrange(num_aux):
+            aux_types.append(self.aux_type(i))
+        return aux_types
+
     def asnumpy(self):
         """Return a dense ``numpy.ndarray`` object with value copied from this array
         """
@@ -182,7 +190,16 @@ class SparseNDArray(NDArray):
     def astype(self, dtype):
         raise Exception('Not implemented for SparseND yet!')
     def copyto(self, other):
-        raise Exception('Not implemented for SparseND yet!')
+        if isinstance(other, NDArray):
+            if other.handle is self.handle:
+                warnings.warn('You are attempting to copy an array to itself', RuntimeWarning)
+                return
+            return _internal._copyto(self, out=other)
+        elif isinstance(other, Context):
+            hret = SparseNDArray(_new_alloc_handle(self.storage_type, self.shape, other, True, self.dtype, self.aux_types()))
+            return _internal._copyto(self, out=hret)
+        else:
+            raise TypeError('copyto does not support type ' + str(type(other)))
     def copy(self):
         raise Exception('Not implemented for SparseND yet!')
     def as_in_context(self, context):
@@ -273,11 +290,13 @@ def zeros(shape, storage_type, ctx=None, dtype=mx_real_t, aux_types=None):
     shape : int or tuple of int
         The shape of the empty array
     storage_type:
-
+        'row_sparse', etc
     ctx : Context, optional
         An optional device context (default is the current default context)
     dtype : str or numpy.dtype, optional
         An optional value type (default is `float32`)
+    aux_types:
+        [np.int32], etc
 
     Returns
     -------
@@ -295,9 +314,12 @@ def zeros(shape, storage_type, ctx=None, dtype=mx_real_t, aux_types=None):
     """
     if ctx is None:
         ctx = Context.default_ctx
-    assert(storage_type == 'row_sparse')
-    if aux_types is None:
-        aux_types = _STORAGE_AUX_TYPES['row_sparse']
+    if storage_type == 'row_sparse':
+        if aux_types is None:
+            aux_types = _STORAGE_AUX_TYPES['row_sparse']
+    else:
+       # TODO alloc handle for dense nd?
+       raise Exception("zeros not implemented yet!")
     # pylint: disable= no-member, protected-access
     out = SparseNDArray(_new_alloc_handle(storage_type, shape, ctx,
                                           aux_types=aux_types))

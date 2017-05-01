@@ -29,6 +29,7 @@ It updates the weights using::
 .set_attr<nnvm::FInferShape>("FInferShape", ElemwiseShape<2, 1>)
 .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<2, 1>)
 .set_attr<FCompute>("FCompute<cpu>", SGDUpdate<cpu>)
+.set_attr<FComputeEx>(FCOMP_EX_CPU, SGDUpdateEx<cpu>)
 .add_argument("weight", "NDArray-or-Symbol", "Weight")
 .add_argument("grad", "NDArray-or-Symbol", "Gradient")
 .add_arguments(SGDParam::__FIELDS__());

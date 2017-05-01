@@ -83,7 +83,8 @@ inline void SGDUpdate(const nnvm::NodeAttrs& attrs,
       static_cast<DType>(param.rescale_grad), req[0]);
   });
 }
-// TODO(haibin) remove me
+
+// TODO(haibin) duplicated code. remove me
 #define NDARRAY_IDX_TYPE_SWITCH(type, DType, ...)   \
   switch (type) {                                   \
   case mshadow::kUint8:                             \
@@ -117,7 +118,8 @@ struct SGDDnsRspKernel {
       uint64_t data_i = grad_idx[i] * width + j;
       uint64_t grad_i = i * width + j;
       if (clip_gradient >= 0.0f) {
-      // Not implemented;
+        KERNEL_ASSIGN(out[data_i], req, (1.f - lr * wd) * weight[data_i] -
+                     (lr) * mshadow_op::clip::Map(rescale_grad * grad_val[grad_i], clip_gradient));
       } else {
         KERNEL_ASSIGN(out[data_i], req, (1.f - lr * wd) * weight[data_i] -
                       (lr * rescale_grad) * grad_val[grad_i]);
@@ -137,7 +139,6 @@ inline void SGDUpdateDnsRspImpl(const SGDParam& param,
   using namespace mshadow::expr;
   using namespace mshadow_op;
   Stream<xpu>* s = ctx.get_stream<xpu>();
-  if (param.clip_gradient >= 0.0f) LOG(FATAL) << "Not implemented";
   auto &weight = inputs[0];
   auto &grad = inputs[1];
   auto &out = outputs[0];
