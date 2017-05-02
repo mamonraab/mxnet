@@ -103,10 +103,10 @@ inline void SGDUpdate(const nnvm::NodeAttrs& attrs,
     LOG(FATAL) << "Unknown idx type enum " << type; \
   }
 
-/*! \brief
+/*! \brief kernel for sparse sgd
  */
 template<int req>
-struct SGDDnsRspKernel {
+struct SparseSGDDnsRspKernel {
   // DType is the output data type
   // IType is row sparse idx type
   // i is the ith row in row sparse gradient
@@ -130,7 +130,7 @@ struct SGDDnsRspKernel {
 
 // Impl implies a different interface than FComputeEx
 template<typename xpu>
-inline void SGDUpdateDnsRspImpl(const SGDParam& param,
+inline void SparseSGDUpdateDnsRspImpl(const SGDParam& param,
                         const OpContext &ctx,
                         const std::vector<NDArray> &inputs,
                         const std::vector<OpReqType> &req,
@@ -149,12 +149,12 @@ inline void SGDUpdateDnsRspImpl(const SGDParam& param,
     NDARRAY_IDX_TYPE_SWITCH(grad.aux_type(rowsparse::kIdx), IType, {
       MXNET_ASSIGN_REQ_SWITCH(req[0], req_type, {
         auto weight_data = weight.data().FlatTo2D<xpu, DType>(s);
-        auto grad_idx = grad.aux_data(rowsparse::kIdx).FlatTo2D<xpu, IType>(s);
+        auto grad_idx = grad.aux_data(rowsparse::kIdx).FlatTo1D<xpu, IType>(s);
         auto grad_val = grad.data().FlatTo2D<xpu, DType>(s);
         auto out_data = out.data().FlatTo2D<xpu, DType>(s);
         auto num_rows = grad.aux_shape(rowsparse::kIdx)[0];
         auto width = weight.shape().ProdShape(1, weight.shape().ndim());
-        mxnet_op::Kernel<SGDDnsRspKernel<req_type>, xpu>::Launch(s, num_rows, width,
+        mxnet_op::Kernel<SparseSGDDnsRspKernel<req_type>, xpu>::Launch(s, num_rows, width,
           out_data.dptr_, weight_data.dptr_, grad_idx.dptr_, grad_val.dptr_,
           static_cast<DType>(param.clip_gradient),
           static_cast<DType>(param.lr), static_cast<DType>(param.wd),
@@ -166,7 +166,7 @@ inline void SGDUpdateDnsRspImpl(const SGDParam& param,
 }
 
 template<typename xpu>
-inline void SGDUpdateEx(const nnvm::NodeAttrs& attrs,
+inline void SparseSGDUpdateEx(const nnvm::NodeAttrs& attrs,
                         const OpContext &ctx,
                         const std::vector<NDArray> &inputs,
                         const std::vector<OpReqType> &req,
@@ -178,7 +178,7 @@ inline void SGDUpdateEx(const nnvm::NodeAttrs& attrs,
   auto weight_stype = inputs[0].storage_type();
   auto grad_stype = inputs[1].storage_type();
   if (weight_stype == kDefaultStorage && grad_stype == kRowSparseStorage) {
-    SGDUpdateDnsRspImpl<xpu>(param, ctx, inputs, req, outputs);
+    SparseSGDUpdateDnsRspImpl<xpu>(param, ctx, inputs, req, outputs);
   } else {
     LOG(FATAL) << "Not implemented";
   }
@@ -251,6 +251,84 @@ inline void SGDMomUpdate(const nnvm::NodeAttrs& attrs,
       static_cast<DType>(param.lr), static_cast<DType>(param.wd),
       static_cast<DType>(param.rescale_grad), req[0]);
   });
+}
+
+template<int req>
+struct SparseSGDMomDnsRspDnsKernel {
+  template<typename DType, typename IType>
+  MSHADOW_XINLINE static void Map(int i, size_t width, DType* out_data,
+    DType* mom_data, const DType* weight_data, const IType* grad_idx,
+    const DType* grad_data, const DType param_clip_gradient, const DType param_momentum,
+    const DType param_lr, const DType param_wd, const DType param_rescale_grad) {
+    for (size_t j = 0; j < width; j++) {
+      uint64_t data_i = grad_idx[i] * width + j;
+      uint64_t grad_i = i * width + j;
+      if (param_clip_gradient >= 0.0f) {
+        mom_data[data_i] = param_momentum * mom_data[data_i]
+                - param_lr * param_wd * weight_data[data_i]
+                - param_lr *
+                mshadow_op::clip::Map(param_rescale_grad * grad_data[grad_i],
+                                      param_clip_gradient);
+      } else {
+        mom_data[data_i] = param_momentum * mom_data[data_i]
+                  - param_lr * param_wd * weight_data[data_i]
+                  - param_lr * param_rescale_grad * grad_data[grad_i];
+      }
+      KERNEL_ASSIGN(out_data[data_i], req, weight_data[data_i] + mom_data[data_i]);
+    }
+  }
+};
+
+template<typename xpu>
+inline void SparseSGDMomUpdateDnsRspDnsImpl(const SGDMomParam& param,
+                                            const OpContext &ctx,
+                                            const std::vector<NDArray> &inputs,
+                                            const std::vector<OpReqType> &req,
+                                            const std::vector<NDArray> &outputs) {
+  using namespace mxnet_op;
+  Stream<xpu>* s = ctx.get_stream<xpu>();
+  auto &weight = inputs[0];
+  auto &grad = inputs[1];
+  auto &mom = inputs[2];
+  auto &out = outputs[0];
+  MSHADOW_REAL_TYPE_SWITCH(weight.dtype(), DType, {
+    NDARRAY_IDX_TYPE_SWITCH(grad.aux_type(rowsparse::kIdx), IType, {
+      MXNET_ASSIGN_REQ_SWITCH(req[0], req_type, {
+        auto weight_data = weight.data().FlatTo2D<xpu, DType>(s);
+        auto grad_idx = grad.aux_data(rowsparse::kIdx).FlatTo1D<xpu, IType>(s);
+        auto grad_val = grad.data().FlatTo2D<xpu, DType>(s);
+        auto mom_data = mom.data().FlatTo2D<xpu, DType>(s);
+        auto out_data = out.data().FlatTo2D<xpu, DType>(s);
+        auto num_rows = grad.aux_shape(rowsparse::kIdx)[0];
+        auto width = weight.shape().ProdShape(1, weight.shape().ndim());
+        Kernel<SparseSGDMomDnsRspDnsKernel<req_type>, xpu>::Launch(s, num_rows, width,
+          out_data.dptr_, mom_data.dptr_, weight_data.dptr_, grad_idx.dptr_, grad_val.dptr_,
+          static_cast<DType>(param.clip_gradient), static_cast<DType>(param.momentum),
+          static_cast<DType>(param.lr), static_cast<DType>(param.wd),
+          static_cast<DType>(param.rescale_grad));
+      });
+    });
+  });
+}
+
+template<typename xpu>
+inline void SparseSGDMomUpdateEx(const nnvm::NodeAttrs& attrs,
+                                 const OpContext &ctx,
+                                 const std::vector<NDArray> &inputs,
+                                 const std::vector<OpReqType> &req,
+                                 const std::vector<NDArray> &outputs) {
+  using namespace mxnet_op;
+  const SGDMomParam& param = nnvm::get<SGDMomParam>(attrs.parsed);
+  auto weight_stype = inputs[0].storage_type();
+  auto grad_stype = inputs[1].storage_type();
+  auto mom_stype = inputs[2].storage_type();
+
+  if (weight_stype == kDefaultStorage && grad_stype == kRowSparseStorage &&
+      mom_stype == kDefaultStorage) {
+    SparseSGDMomUpdateDnsRspDnsImpl<xpu>(param, ctx, inputs, req, outputs);
+  } else {
+    LOG(FATAL) << "Not implemented";
+  }
 }
 
 struct AdamParam : public dmlc::Parameter<AdamParam> {

@@ -48,7 +48,7 @@ It updates the weights using::
 .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<2, 1>)
 // TODO write FCompute for sparse sgd
 // .set_attr<FCompute>("FCompute<cpu>", SGDUpdate<cpu>)
-.set_attr<FComputeEx>(FCOMP_EX_CPU, SGDUpdateEx<cpu>)
+.set_attr<FComputeEx>(FCOMP_EX_CPU, SparseSGDUpdateEx<cpu>)
 .add_argument("weight", "NDArray-or-Symbol", "Weight")
 .add_argument("grad", "NDArray-or-Symbol", "Gradient")
 .add_arguments(SGDParam::__FIELDS__());
@@ -83,6 +83,26 @@ Where the parameter ``momentum`` is the decay rate of momentum estimates at each
     return std::vector<uint32_t>{2};
   })
 .set_attr<FCompute>("FCompute<cpu>", SGDMomUpdate<cpu>)
+.add_argument("weight", "NDArray-or-Symbol", "Weight")
+.add_argument("grad", "NDArray-or-Symbol", "Gradient")
+.add_argument("mom", "NDArray-or-Symbol", "Momentum")
+.add_arguments(SGDMomParam::__FIELDS__());
+
+NNVM_REGISTER_OP(sparse_sgd_mom_update)
+.describe(R"code(Momentum update function for SGD for non-zero gradients
+)code" ADD_FILELINE)
+.set_num_inputs(3)
+.set_num_outputs(1)
+.set_attr_parser(ParamParser<SGDMomParam>)
+.set_attr<nnvm::FInferShape>("FInferShape", ElemwiseShape<3, 1>)
+.set_attr<nnvm::FInferType>("FInferType", ElemwiseType<3, 1>)
+.set_attr<nnvm::FMutateInputs>("FMutateInputs",
+  [](const nnvm::NodeAttrs& attrs) {
+    return std::vector<uint32_t>{2};
+  })
+// TODO(haibin) implement FCompute
+// .set_attr<FCompute>("FCompute<cpu>", SGDMomUpdate<cpu>)
+.set_attr<FComputeEx>(FCOMP_EX_CPU, SparseSGDMomUpdateEx<cpu>)
 .add_argument("weight", "NDArray-or-Symbol", "Weight")
 .add_argument("grad", "NDArray-or-Symbol", "Gradient")
 .add_argument("mom", "NDArray-or-Symbol", "Momentum")

@@ -191,19 +191,24 @@ class PySparseSGD(mx.optimizer.Optimizer):
                    continue
                 if self.clip_gradient is not None:
                     weight[row] = ((1 - lr*wd)*weight[row] -
-                        lr*mx.nd.clip(grad[row]*self.rescale_grad, -self.clip_gradient, self.clip_gradient))
+                        lr*mx.nd.clip(grad[row]*self.rescale_grad,
+                                     -self.clip_gradient, self.clip_gradient))
                 else:
                     weight[row] = (1 - lr*wd)*weight[row] - lr*self.rescale_grad*grad[row]
         else:
-            raise Exception("Not implemented yet")
             mom = state
-            if self.clip_gradient is not None:
-                mom[:] = (self.momentum*mom - lr*wd*weight -
-                    lr*mx.nd.clip(grad*self.rescale_grad, -self.clip_gradient, self.clip_gradient))
-                weight += mom
-            else:
-                mom[:] = self.momentum*mom - lr*wd*weight - lr*self.rescale_grad*grad
-                weight += mom
+            for row in xrange(num_rows):
+              grad_row = grad[row].asnumpy()
+              all_zeros = mx.test_utils.almost_equal(grad_row, np.zeros_like(grad_row))
+              if all_zeros:
+                  continue
+              if self.clip_gradient is not None:
+                  mom[row] = (self.momentum*mom[row] - lr*wd*weight[row] -
+                      lr*mx.nd.clip(grad[row]*self.rescale_grad, -self.clip_gradient, self.clip_gradient))
+                  weight[row] += mom[row]
+              else:
+                  mom[row] = self.momentum*mom[row] - lr*wd*weight[row] - lr*self.rescale_grad*grad[row]
+                  weight[row] += mom[row]
 
 def test_sparse_sgd():
     mx.random.seed(0)
@@ -211,20 +216,19 @@ def test_sparse_sgd():
     opt2 = mx.optimizer.SparseSGD
     shape = (3, 4)
     kwargs = [{},
-              #{'momentum': 0.9},
+              {'momentum': 0.9},
               {'clip_gradient': 0.5},
               {'clip_gradient': 0.4, 'rescale_grad': 0.14},
               {'rescale_grad': 0.8},
               {'clip_gradient': 0.5, 'wd': 0.07},
               {'clip_gradient': 0.4, 'rescale_grad': 0.14, 'wd': 0.03},
               {'rescale_grad': 0.8, 'wd': 0.05},
-              #{'clip_gradient': 0.5, 'momentum': 0.9},
-              #{'clip_gradient': 0.4, 'rescale_grad': 0.14, 'momentum': 0.9},
-              #{'rescale_grad': 0.8, 'momentum': 0.9},
-              #{'clip_gradient': 0.5, 'wd': 0.07, 'momentum': 0.9},
-              #{'clip_gradient': 0.4, 'rescale_grad': 0.14, 'wd': 0.03, 'momentum': 0.9},
-              #{'rescale_grad': 0.8, 'wd': 0.05, 'momentum': 0.9}
-              ]
+              {'clip_gradient': 0.5, 'momentum': 0.9},
+              {'clip_gradient': 0.4, 'rescale_grad': 0.14, 'momentum': 0.9},
+              {'rescale_grad': 0.8, 'momentum': 0.9},
+              {'clip_gradient': 0.5, 'wd': 0.07, 'momentum': 0.9},
+              {'clip_gradient': 0.4, 'rescale_grad': 0.14, 'wd': 0.03, 'momentum': 0.9},
+              {'rescale_grad': 0.8, 'wd': 0.05, 'momentum': 0.9}]
     for kwarg in kwargs:
         compare_optimizer(opt1(**kwarg), opt2(**kwarg), shape, w_stype='default', g_stype='row_sparse')
 

@@ -4,7 +4,7 @@ import pickle
 import logging
 from .ndarray import NDArray, zeros, clip, sqrt, sign
 from .ndarray import sgd_update, sgd_mom_update, adam_update, rmsprop_update, rmspropalex_update
-from .ndarray import sparse_sgd_update
+from .ndarray import sparse_sgd_update, sparse_sgd_mom_update
 from .random import normal
 
 
@@ -338,7 +338,8 @@ class SparseSGD(SGD):
         self._update_count(index)
 
         if state is not None:
-            raise Exception("Not implemented yet")
+            sparse_sgd_mom_update(weight, grad, state, out=weight,
+                           lr=lr, wd=wd, **self.kwargs)
         else:
             sparse_sgd_update(weight, grad, out=weight,
                        lr=lr, wd=wd, **self.kwargs)
