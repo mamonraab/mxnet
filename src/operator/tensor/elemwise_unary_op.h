@@ -184,9 +184,13 @@ void CastStorageComputeRspDns(const nnvm::NodeAttrs& attrs,
         // Copy over
         auto in_data = in.data().FlatTo2D<xpu, DType>(s);
         auto out_data = out.data().FlatTo2D<xpu, DType>(s);
+        CHECK(out.shape().ndim() > 0);
+        auto invalid_row_id = out.shape()[0];
         auto num_rows = in.aux_shape(rowsparse::kIdx)[0];
         auto in_idx = in.aux_data(rowsparse::kIdx).FlatTo1D<xpu, IType>(s);
         for (size_t i = 0; i < num_rows; i += 1) {
+          size_t row_id = in_idx[i];
+          if (row_id == invalid_row_id) continue;
           mshadow::Copy(out_data[in_idx[i]], in_data[i], s);
         }
       }

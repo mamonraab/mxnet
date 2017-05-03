@@ -43,8 +43,8 @@ def test_sparse_nd_elementwise_fallback():
         check_sparse_nd_elemwise_binary(shape, ['row_sparse', 'row_sparse'], op, g)
 
 def check_conversion_row_sparse():
-    val = np.array([5, 10])
-    idx = np.array([1])
+    val = np.array([[5, 10], [0, 0]])
+    idx = np.array([1, 5])
     sparse_val = np.array([[0, 0], [5, 10], [0, 0], [0, 0], [0, 0]])
     a = mx.nd.array(val)
     b = mx.nd.array(idx, dtype=np.int32)

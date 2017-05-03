@@ -113,8 +113,40 @@ def test_cast_storage():
     test = mx.symbol.cast_storage(var, storage_type=1)
     check_symbolic_forward(test, {'sp_data':sp_nd}, [dns_np])
 '''
+
+
+def test_sparse_embedding():
+    in_dim = 10
+    out_dim = 4
+    batch = 24
+
+    data = mx.sym.Variable("data", dtype=np.int32)
+    embed = mx.sym.SparseEmbedding(data=data, input_dim=in_dim, output_dim=out_dim, name="embed")
+    exe_test = embed.simple_bind(default_context(), grad_req={'data': 'null', 'embed_weight': 'write'},
+                                 # TODO(haibin) remove test_embed option when simple_bind cpp api is ready
+                                 test_embed=True, data=(batch,))
+    arg_map = dict(zip(embed.list_arguments(), exe_test.arg_arrays))
+    grad_map = dict(zip(embed.list_arguments(), exe_test.grad_arrays))
+    np_data = np.random.randint(low=0, high=in_dim, size=batch)
+    np_weight = np.random.uniform(-0.01, 0.01, arg_map["embed_weight"].shape)
+    np_onehot = np.zeros((batch, in_dim))
+    np_onehot[np.arange(batch), np_data] = 1.0
+    # forward
+    arg_map["data"][:] = np_data
+    arg_map["embed_weight"][:] = np_weight
+    exe_test.forward(is_train=True)
+    assert_almost_equal(exe_test.outputs[0].asnumpy(), np.dot(np_onehot, np_weight))
+    # backward
+    np_grad = np.random.uniform(-1, 1, exe_test.outputs[0].shape)
+    grad = mx.nd.zeros(np_grad.shape)
+    grad[:] = np_grad
+    exe_test.backward([grad])
+    assert_almost_equal(grad_map["embed_weight"].asnumpy(), np.dot(np_onehot.T, np_grad))
+
+
 if __name__ == '__main__':
     test_elemwise_add_dense()
     test_elemwise_add_dense_sparse()
     test_elemwise_add_sparse_sparse()
     test_elemwise_add_multiple_stages()
+    test_sparse_embedding()

@@ -9,6 +9,7 @@
 #include "../src/executor/graph_executor.h"
 #include "../src/operator/tensor/elemwise_binary_op.h"
 #include "../src/operator/tensor/elemwise_unary_op.h"
+#include "../src/operator/tensor/indexing_op.h"
 #include "../src/operator/optimizer_op-inl.h"
 
 #define TEST_DTYPE float
@@ -214,7 +215,7 @@ void SGDDnsRspTest() {
   Engine::Get()->PushSync([weight, rsp_grad, output, param](RunContext ctx) {
       std::vector<NDArray> inputs{weight, rsp_grad}, outputs{output};
       std::vector<OpReqType> req({kAddTo});
-      op::SGDUpdateDnsRspImpl<cpu>(param, {}, inputs, req, outputs);
+      op::SparseSGDUpdateDnsRspImpl<cpu>(param, {}, inputs, req, outputs);
     }, weight.ctx(), {rsp_grad.var()}, {output.var()},
     FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
   auto sgd = [lr, wd, rescale] (TEST_DTYPE weight, TEST_DTYPE grad) {
@@ -226,6 +227,48 @@ void SGDDnsRspTest() {
                                  7 + sgd(7, 3), 8 + sgd(8, 4)});
   output.WaitToRead();
   CheckDataRegion(output.data(), expected.data());
+}
+
+void SparseEmbeddingBackwardTest() {
+  Context ctx = Context::CPU();
+  // d1 .. dk
+  // idx shape : (2, 3)
+  // input dim 4, output dim 2
+  int input_dim = 4;
+  int output_dim = 2;
+  TShape idx_shape({2, 3});
+  NDArray idx = GetIndexND(idx_shape, ctx, {1, 2, 3, 1, 2, 3});
+  TShape grad_shape({2, 3, 2});
+  NDArray grad = GetDenseND(grad_shape, ctx, {0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2});
+  TShape out_shape({4, 2});
+  NDArray output = NDArray(kRowSparseStorage, out_shape, ctx);
+  op::EmbeddingParam param;
+  param.input_dim = input_dim;
+  param.output_dim = output_dim;
+  param.dtype = 0;
+
+  Engine::Get()->PushSync([idx, grad, output, param](RunContext ctx) {
+      std::vector<NDArray> inputs{grad, idx}, outputs{output, output};
+      // this is a hack
+      std::vector<OpReqType> req({kNullOp, kAddTo});
+      op::SparseEmbeddingOpBackwardEx<cpu>({}, {}, inputs, req, outputs);
+    }, output.ctx(), {grad.var(), idx.var()}, {output.var()},
+    FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
+
+  NDArray expected = GetDenseND(out_shape, ctx, {0,0,0,0,0,0,0,0});
+  Engine::Get()->PushSync([idx, grad, expected, param](RunContext ctx) {
+      std::vector<TBlob> inputs{grad.data(), idx.data()}, outputs{expected.data(), expected.data()};
+      std::vector<OpReqType> req({kNullOp, kWriteTo});
+      op::EmbeddingOpBackward<cpu>({}, {}, inputs, req, outputs);
+    }, expected.ctx(), {grad.var(), idx.var()}, {expected.var()},
+    FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
+  NDArray converted = Convert(kDefaultStorage, output);
+  expected.WaitToRead();
+  CheckDataRegion(converted.data(), expected.data());
+}
+
+TEST(NDArray, sparse_embedding) {
+  SparseEmbeddingBackwardTest();
 }
 
 TEST(NDArray, conversion) {
