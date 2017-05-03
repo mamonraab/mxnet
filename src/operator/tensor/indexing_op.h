@@ -315,6 +315,88 @@ void EmbeddingOpBackward(const nnvm::NodeAttrs& attrs,
   });
 }
 
+// todo template req
+struct SparseEmbeddingBackwardRsp {
+  template<typename DType, typename IType>
+  // size_t?
+  // i for each thread
+  // each thread is responsible for rows in output in [segment_start, segment_end)
+  MSHADOW_XINLINE static void Map(int i, const size_t width, IType* dst_idx, DType* dst_val,
+                                  const IType* idx, const size_t num_idx, const DType* src,
+                                  const size_t segment_len, const size_t num_rows, const OpReqType req) {
+    size_t segment_start = i * segment_len;
+    size_t segment_end = (i + 1) * segment_len;
+    for (size_t y = 0; y < num_idx; y++) {
+      size_t j = idx[y];
+      if (j > num_rows) j = num_rows - 1;
+      if (j >= segment_start && j < segment_end) continue;
+      dst_idx[j] = j;
+      for (size_t k = 0; k < width; k++) {
+        KERNEL_ASSIGN(dst_val[j * width + k], req, src[y * width + k]);
+      }
+    }
+  }
+};
+
+// todo replace xpu with cpu
+template<typename xpu>
+void SparseEmbeddingOpBackwardEx(const nnvm::NodeAttrs& attrs,
+                               const OpContext& ctx,
+                               const std::vector<NDArray>& inputs,
+                               const std::vector<OpReqType>& req,
+                               const std::vector<NDArray>& outputs) {
+  using namespace mshadow;
+  using namespace mxnet_op;
+  using namespace mshadow::expr;
+  CHECK_EQ(inputs.size(), 2U);
+  CHECK_EQ(outputs.size(), 2U);
+  CHECK_EQ(req[embedding::kData], kNullOp)
+          << "Embedding layer doesn't support calculate data gradient";
+  // idx shape (d1, d2 .. dk)
+  auto idx = inputs[1];
+  // grad shape (d1, d2, .. dk, out_dim)
+  auto grad = inputs[0];
+  // weight shape (in_dim, out_dim)
+  auto output = outputs[1];
+  CHECK_EQ(idx.storage_type(), kDefaultStorage);
+  CHECK_EQ(grad.storage_type(), kDefaultStorage);
+  CHECK_EQ(output.dtype(), grad.dtype());
+
+  const TShape& ishape = idx.shape();
+  const TShape& oshape = grad.shape();
+
+  Stream<xpu> *s = ctx.get_stream<xpu>();
+  CHECK_EQ(idx.dtype(), output.aux_type(rowsparse::kIdx))
+           << "embedding input index and gradient row sparse type doesn't match!";
+  output.CheckAndAlloc({grad.shape()[0]});
+  MSHADOW_TYPE_SWITCH(output.dtype(), DType, {
+    MSHADOW_TYPE_SWITCH(idx.dtype(), IType, {
+      // Assuming aux_type == IType for now
+      // idx_data shape (d1 * d2 * .. dk)
+      // input embedding indice (d1 * d2 * .. dk), each idx in [0, input_dim)
+      auto idx_data = idx.data().get_with_shape<xpu, 1, IType>(
+        Shape1(ishape.ProdShape(0, ishape.ndim())), s);
+      // grad_data shape (d1 * d2 * .. dk, out_dim)
+      auto grad_data = grad.data().get_with_shape<xpu, 2, DType>(
+        Shape2(oshape.ProdShape(0, oshape.ndim()-1), oshape[oshape.ndim()-1]), s);
+      auto output_idx = output.aux_data(rowsparse::kIdx).get<xpu, 1, IType>(s);
+      auto output_val = output.data().get<xpu, 2, DType>(s);
+      int num_threads = 64;
+      size_t width = oshape.ProdShape(1, oshape.ndim() - 1);
+      size_t segment_len = (oshape[0] + num_threads - 1) / num_threads;
+      // TODO fill with invalid values
+      for (size_t i = 0; i < oshape[0]; i++) {
+        output_idx.dptr_[i] = oshape[0];
+      }
+      LOG(INFO) << width;
+      Kernel<SparseEmbeddingBackwardRsp, xpu>::Launch(s, num_threads, width, output_idx.dptr_,
+                                                      output_val.dptr_, idx_data.dptr_,
+                                                      ishape.Size(), grad_data.dptr_, segment_len,
+                                                      oshape[0], req[0]);
+    });
+  });
+}
+
 namespace take_ {  // to avoid name conflict
 enum TakeOpInputs {kArr, kIdx};
 enum TakeOpOutputs {kOut};

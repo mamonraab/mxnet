@@ -86,6 +86,17 @@ NNVM_REGISTER_OP(_backward_Embedding)
 .set_attr<nnvm::TIsBackward>("TIsBackward", true)
 .set_attr<FCompute>("FCompute<cpu>", EmbeddingOpBackward<cpu>);
 
+NNVM_REGISTER_OP(_backward_SparseEmbedding)
+.set_num_inputs(2)
+.set_num_outputs(2)
+//.set_attr<FResourceRequest>("FResourceRequest",
+//  [](const NodeAttrs& attrs) {
+//    return std::vector<ResourceRequest>{ResourceRequest::kTempSpace};
+//  })
+// TODO infer storage type
+.set_attr<nnvm::TIsBackward>("TIsBackward", true)
+.set_attr<FComputeEx>("FComputeEx<cpu>", SparseEmbeddingOpBackwardEx<cpu>);
+
 
 NNVM_REGISTER_OP(take)
 .describe(R"code(Takes elements from an input array along the given axis.
