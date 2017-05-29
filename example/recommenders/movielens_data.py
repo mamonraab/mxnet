@@ -22,7 +22,7 @@ def load_mldata_iter(filename, batch_size):
     user = mx.nd.array(user)
     item = mx.nd.array(item)
     score = mx.nd.array(score)
-    return mx.io.NDArrayIter(data={'user':user,'item':item},label={'score':score}, 
+    return mx.io.NDArrayIter(data={'user':user,'item':item},label={'score':score},
                              batch_size=batch_size, shuffle=True)
 
 def ensure_local_data(prefix):

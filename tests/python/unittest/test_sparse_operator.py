@@ -69,7 +69,7 @@ def test_elemwise_add_ex_multiple_stages():
     exec_test.backward(out_grads=exec_test.outputs)
     assert_almost_equal(arr_grads[0].asnumpy(), arr_grads[1].asnumpy())
 
-# TODO(haibin) also add test for backward pass. Check if exception is thrown
+# TODO(haibin) also add test for backward pass.
 def test_cast_storage_ex():
     def test_rsp_to_dns(shape):
         rsp, (data, row_idx) = rand_sparse_ndarray(shape, 'row_sparse')
@@ -93,6 +93,9 @@ def test_cast_storage_ex():
         assert_almost_equal(mx_dns.asnumpy(), np_dns)
 
     def test_dns_to_csr(dns_in):
+        if default_context().device_type == 'gpu':
+            print("cast_storage(dns, csr) for gpu context not implemented yet, skipping test")
+            return
         dns_in = np.array(dns_in)
         csr_out = mx.nd.cast_storage(mx.nd.array(dns_in, dtype=default_dtype()), storage_type='csr')
         ret = mx.nd.cast_storage(csr_out, storage_type='default')

@@ -244,7 +244,7 @@ class BucketingModule(BaseModule):
 
     def bind(self, data_shapes, label_shapes=None, for_training=True,
              inputs_need_grad=False, force_rebind=False, shared_module=None,
-             grad_req='write'):
+             grad_req='write', group2ctx=None):
         """Binding for a `BucketingModule` means setting up the buckets and binding the
         executor for the default bucket key. Executors corresponding to other keys are
         bound afterwards with `switch_bucket`.
@@ -269,6 +269,8 @@ class BucketingModule(BaseModule):
             Can be specified globally (str) or for each argument (list, dict).
         bucket_key : str (or any python object)
             bucket key for binding. by default use the default_bucket_key
+        group2ctx : Dict of string to mx.Context
+            The dict mapping the `ctx_group` attribute to the context assignment.
         """
         # in case we already initialized params, keep it
         if self.params_initialized:
@@ -295,7 +297,8 @@ class BucketingModule(BaseModule):
                         fixed_param_names=self._fixed_param_names,
                         state_names=self._state_names)
         module.bind(data_shapes, label_shapes, for_training, inputs_need_grad,
-                    force_rebind=False, shared_module=None, grad_req=grad_req)
+                    force_rebind=False, shared_module=None, grad_req=grad_req,
+                    group2ctx=group2ctx)
         self._curr_module = module
         self._curr_bucket_key = self._default_bucket_key
         self._buckets[self._default_bucket_key] = module

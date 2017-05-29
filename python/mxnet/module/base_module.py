@@ -900,7 +900,7 @@ class BaseModule(object):
     ################################################################################
     def bind(self, data_shapes, label_shapes=None, for_training=True,
              inputs_need_grad=False, force_rebind=False, shared_module=None,
-             grad_req='write'):
+             grad_req='write', group2ctx=None):
         """Binds the symbols to construct executors. This is necessary before one
         can perform computation with the module.
 
@@ -929,6 +929,8 @@ class BaseModule(object):
             Requirement for gradient accumulation. Can be 'write', 'add', or 'null'
             (default to 'write').
             Can be specified globally (str) or for each argument (list, dict).
+        group2ctx : Dict of string to mx.Context
+            The dict mapping the `ctx_group` attribute to the context assignment.
 
         Examples
         --------

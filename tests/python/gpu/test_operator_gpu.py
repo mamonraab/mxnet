@@ -3,6 +3,7 @@ import os
 curr_path = os.path.dirname(os.path.abspath(os.path.expanduser(__file__)))
 sys.path.insert(0, os.path.join(curr_path, '../unittest'))
 from test_operator import *
+from test_sparse_operator import test_cast_storage_ex
 from test_optimizer import *
 from test_random import *
 import mxnet as mx

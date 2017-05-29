@@ -15,7 +15,6 @@
 #include "../elemwise_op_common.h"
 #include "../special_functions-inl.h"
 #include "../mxnet_op.h"
-#include "./broadcast_reduce-inl.h"
 
 namespace mxnet {
 namespace op {
@@ -528,7 +527,45 @@ inline bool CastStorageInferStorageType(const nnvm::NodeAttrs& attrs,
 // and move them to a .cuh file
 #ifdef __CUDACC__
 inline void CastStorageDnsRspImpl(mshadow::Stream<gpu>* s, const TBlob& dns, NDArray* rsp) {
-  LOG(FATAL) << "CastStorageDnsRspImpl gpu version is not implemented.";
+  CHECK(rsp != nullptr);
+  CHECK_EQ(rsp->storage_type(), kRowSparseStorage);
+  CHECK_EQ(dns.shape_, rsp->shape());
+
+  MSHADOW_TYPE_SWITCH(dns.type_flag_, DType, {  // data type
+    MSHADOW_INT_TYPE_SWITCH(rsp->aux_type(rowsparse::kIdx), RType, {  // row idx type
+      const index_t num_rows = dns.shape_[0];
+      const index_t num_cols = dns.shape_[1];
+      rsp->CheckAndAllocAuxData(rowsparse::kIdx, mshadow::Shape1(num_rows));
+      TBlob row_idx_blob = rsp->aux_data(rowsparse::kIdx);
+      RType* row_idx = row_idx_blob.dptr<RType>();
+      mxnet_op::Kernel<MarkRspRowIdx, gpu>::Launch(s, num_rows, row_idx,
+          dns.dptr<DType>(), num_cols);
+      index_t nnr = 0;
+      std::vector<RType> idx_local_copy(num_rows, 0);
+      RType *idx_local_ptr = idx_local_copy.data();
+      TBlob idx_local_copy_blob(idx_local_ptr, mshadow::Shape1(num_rows), cpu::kDevMask);
+      // copy back to cpu
+      mshadow::Copy(idx_local_copy_blob.FlatTo1D<cpu, RType>(),
+                    row_idx_blob.FlatTo1D<gpu, RType>(s), s);
+      nnr = std::accumulate(idx_local_ptr, idx_local_ptr + num_rows, nnr);
+      TShape idx_shape(mshadow::Shape1(nnr));
+      rsp->SetAuxShape(rowsparse::kIdx, idx_shape);
+      if (0 == nnr) return;
+      rsp->CheckAndAllocData(mshadow::Shape2(nnr, num_cols));
+      mshadow::Tensor<gpu, 2, DType> dns_data = dns.FlatTo2D<gpu, DType>(s);
+      mshadow::Tensor<gpu, 2, DType> rsp_data = rsp->data().FlatTo2D<gpu, DType>(s);
+      size_t idx = 0;
+      for (index_t i = 0; i < num_rows; ++i) {
+        if (idx_local_copy[i] > 0) {
+          idx_local_copy[idx] = i;
+          mshadow::Copy(rsp_data[idx++], dns_data[i], s);
+        }
+      }
+      // copy sorted & valid index to gpu
+      mshadow::Copy(rsp->aux_data(rowsparse::kIdx).FlatTo1D<gpu, RType>(s),
+                    TBlob(idx_local_ptr, idx_shape, cpu::kDevMask).FlatTo1D<cpu, RType>(), s);
+    });
+  });
 }
 
 inline void CastStorageDnsCsrImpl(mshadow::Stream<gpu>* s, const TBlob& dns, NDArray* csr) {

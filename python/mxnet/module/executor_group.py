@@ -124,7 +124,8 @@ class DataParallelExecutorGroup(object):
     """
     def __init__(self, symbol, contexts, workload, data_shapes, label_shapes, param_names,
                  for_training, inputs_need_grad, shared_group=None, logger=logging,
-                 fixed_param_names=None, grad_req='write', state_names=None):
+                 fixed_param_names=None, grad_req='write', state_names=None,
+                 group2ctx=None):
         self.param_names = param_names
         self.arg_names = symbol.list_arguments()
         self.aux_names = symbol.list_auxiliary_states()
@@ -135,6 +136,7 @@ class DataParallelExecutorGroup(object):
 
         self.for_training = for_training
         self.inputs_need_grad = inputs_need_grad
+        self.group2ctx = group2ctx
 
         self.logger = logger
         #In the future we should have a better way to profile memory per device (haibin)
@@ -578,7 +580,8 @@ class DataParallelExecutorGroup(object):
         executor = self.symbol.simple_bind(ctx=context, grad_req=self.grad_req,
                                            type_dict=input_types, param_names=self.param_names,
                                            shared_exec=shared_exec,
-                                           shared_data_arrays=shared_data_arrays, **input_shapes)
+                                           shared_data_arrays=shared_data_arrays,
+                                           group2ctx=self.group2ctx,  **input_shapes)
         self._total_exec_bytes += int(executor.debug_str().split('\n')[-3].split()[1])
         return executor
 

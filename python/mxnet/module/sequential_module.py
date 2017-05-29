@@ -202,7 +202,7 @@ class SequentialModule(BaseModule):
 
     def bind(self, data_shapes, label_shapes=None, for_training=True,
              inputs_need_grad=False, force_rebind=False, shared_module=None,
-             grad_req='write'):
+             grad_req='write', group2ctx=None):
         """Binds the symbols to construct executors. This is necessary before one
         can perform computation with the module.
 
@@ -227,6 +227,8 @@ class SequentialModule(BaseModule):
             Requirement for gradient accumulation. Can be 'write', 'add', or 'null'
             (default to 'write').
             Can be specified globally (str) or for each argument (list, dict).
+        group2ctx : Dict of string to mx.Context
+            The dict mapping the `ctx_group` attribute to the context assignment.
         """
         if self.binded and not force_rebind:
             self.logger.warning('Already bound, ignoring bind()')
@@ -264,7 +266,8 @@ class SequentialModule(BaseModule):
 
             module.bind(data_shapes=my_data_shapes, label_shapes=my_label_shapes,
                         for_training=for_training, inputs_need_grad=my_inputs_need_grad,
-                        force_rebind=force_rebind, shared_module=None, grad_req=grad_req)
+                        force_rebind=force_rebind, shared_module=None, grad_req=grad_req,
+                        group2ctx=group2ctx)
 
             # the output of the previous module is the data of the next module
             my_data_shapes = module.output_shapes
