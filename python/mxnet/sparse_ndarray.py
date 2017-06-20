@@ -221,13 +221,14 @@ class SparseNDArray(NDArray):
 
         """
         stype = self.storage_type
-        assert(stype == 'csr'), "_slice for " + str(stype) + " not implemented yet"
-        warnings.warn('slicing SparseNDArray is not efficient', RuntimeWarning)
         handle = NDArrayHandle()
-        start = mx_uint(start) if start else mx_uint(0)
-        stop = mx_uint(stop) if stop else mx_uint(self.shape[0])
+        start = start if start else 0
+        stop = stop if stop else self.shape[0]
+        warnings.warn('slicing SparseNDArray is not efficient', RuntimeWarning)
+        if stype == 'row_sparse':
+            assert(stop - start == 1), "_slice for row_sparse only supports slicing single row"
         check_call(_LIB.MXNDArraySlice(
-            self.handle, start, stop, ctypes.byref(handle)))
+            self.handle, mx_uint(start), mx_uint(stop), ctypes.byref(handle)))
         ret = _ndarray_cls(handle=handle, writable=False)
         return ret
 

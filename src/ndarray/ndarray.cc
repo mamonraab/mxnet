@@ -94,10 +94,10 @@ NDArray NDArray::Slice(index_t begin, index_t end) const {
       return ret;
     }
   } else if (storage_type() == kCSRStorage) {
+    using namespace csr;
     // TODO(haibin) support auto_grad
     TShape sliced_shape(Shape2(end-begin, shape()[1]));
-    using namespace csr;
-    NDArray ret(storage_type(), TShape(Shape2(end-begin, shape()[1])),
+    NDArray ret(storage_type(), sliced_shape,
                 ctx(), true, dtype_, ptr_->aux_types,
                 {TShape(Shape1(0)), TShape(Shape1(0))});
     NDArray src = *this;
@@ -138,7 +138,79 @@ NDArray NDArray::Slice(index_t begin, index_t end) const {
         });
       } else {
 #if MXNET_USE_CUDA
-       LOG(FATAL) << "SliceEx CSR not implemented yet";
+       LOG(FATAL) << "Slice CSR on GPU not implemented yet";
+#else
+       LOG(FATAL) << MXNET_GPU_NOT_ENABLED_ERROR;
+#endif
+      }
+      }, ctx(), {}, {var()},
+      FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
+    return ret;
+  } else if (storage_type() == kRowSparseStorage) {
+    using namespace rowsparse;
+    CHECK_EQ(end - begin, 1) << "only single-row slice is supported for row_sparse";
+    // TODO(haibin) support auto_grad
+    TShape sliced_shape = shape();
+    sliced_shape[0] = end - begin;
+    NDArray ret(storage_type(), sliced_shape,
+                ctx(), true, dtype_, ptr_->aux_types,
+                {TShape(Shape1(0))});
+    NDArray src = *this;
+    // destination NDArray shares the same variable
+    ret.ptr_->var = var();
+
+    Engine::Get()->PushSync([src, ret, begin, end](RunContext ctx) {
+      NDArray dst = ret;
+      // create a new chunk for dst NDArray
+      NDArray::Chunk chunk = *src.ptr_;
+      // void indptr storage handle
+      chunk.aux_handles[kIdx] = Storage::Handle();
+      if (src.ctx().dev_mask() == cpu::kDevMask) {
+        auto s = ctx.get_stream<cpu>();
+        MSHADOW_INT_TYPE_SWITCH(src.aux_type(kIdx), IType, {
+          MSHADOW_TYPE_SWITCH(src.dtype(), DType, {
+            const IType* src_idx = src.aux_data(kIdx).dptr<IType>();
+            // perform binary search for `begin`
+            auto src_nnr = src.aux_shape(kIdx)[0];
+            int64_t high = src_nnr - 1;
+            int64_t low = 0;
+            int ret = -1;
+            while (high - low > 1) {
+              auto mid = low + (high - low) / 2;
+              if (src_idx[mid] > (int64_t) begin) {
+                high = mid;
+              } else if (src_idx[mid] == (int64_t) begin) {
+                ret = mid;
+                break;
+              } else {
+                low = mid;
+              }
+            }
+            if (src_idx[high] == (int64_t) begin) ret = high;
+            if (src_idx[low] == (int64_t) begin) ret = low;
+            if (ret == -1) {
+              // no result
+              return;
+            }
+            chunk.CheckAndAllocAuxData(kIdx, Shape1(1));
+            IType* dst_idx = static_cast<IType*>(chunk.aux_handles[kIdx].dptr);
+            dst_idx[0] = 0;
+            IType offset = src_idx[ret];
+            DType* values = static_cast<DType*>(chunk.shandle.dptr);
+            TShape storage_shape = dst.shape();
+            storage_shape[0] = 1;
+            chunk.storage_shape = storage_shape;
+            const auto unit_len = storage_shape.ProdShape(1, storage_shape.ndim());
+            chunk.shandle.dptr = values + offset * unit_len;
+            chunk.static_data = true;
+            chunk.skip_delete_var = true;
+            // update dst chunk
+            *dst.ptr_ = chunk;
+          });
+        });
+      } else {
+#if MXNET_USE_CUDA
+       LOG(FATAL) << "Slice RowSparse on GPU not implemented yet";
 #else
        LOG(FATAL) << MXNET_GPU_NOT_ENABLED_ERROR;
 #endif
@@ -147,7 +219,7 @@ NDArray NDArray::Slice(index_t begin, index_t end) const {
       FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
     return ret;
   } else {
-    LOG(FATAL) << "Slice not yet implemented for storage " << storage_type();
+    LOG(FATAL) << "unknown storage type " << storage_type();
   }
   return NDArray();
 }

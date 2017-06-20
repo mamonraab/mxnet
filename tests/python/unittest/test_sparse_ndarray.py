@@ -163,6 +163,15 @@ def test_sparse_nd_slice():
     shape = (rnd.randint(2, 10), rnd.randint(1, 10))
     check_sparse_nd_csr_slice(shape)
 
+    def check_rsp_slice(shape):
+        storage_type = 'row_sparse'
+        B, _ = rand_sparse_ndarray(shape, storage_type)
+        np = B.asnumpy()
+        begin = rnd.randint(0, max(B.indices.shape[0], 1))
+        end = begin + 1
+        nd_slice = B._slice(begin, end)
+        assert same(nd_slice.asnumpy(), np[begin:end])
+    check_rsp_slice(shape)
 
 def test_sparse_nd_equal():
     for stype in ['row_sparse', 'csr']:
