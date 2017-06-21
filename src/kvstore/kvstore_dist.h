@@ -79,6 +79,25 @@ class KVStoreDist : public KVStoreLocal {
     }
   }
 
+  void Init(const std::vector<std::string>& str_keys,
+            const std::vector<NDArray>& values) override {
+    std::vector<int> keys(str_keys.size());
+    for (size_t i = 0; i < str_keys.size(); ++i) {
+      auto &str_key = str_keys[i];
+      CHECK(str_key_dict_.find(str_key) == str_key_dict_.end())
+            << "duplicate init of key " << str_key;
+      str_key_dict_[str_key] = next_str_key_;
+      keys[i] = next_str_key_;
+      if (values[i].storage_type() == kRowSparseStorage) {
+        // reserve key space for row_sparse weight
+        next_str_key_ += values[i].shape()[0];
+      } else {
+        next_str_key_++;
+      }
+    }
+    Init(keys, values);
+  }
+
   void Push(const std::vector<int>& keys,
             const std::vector<NDArray>& values,
             int priority) override {
@@ -93,42 +112,45 @@ class KVStoreDist : public KVStoreLocal {
     GroupKVPairs(keys, values, &uniq_keys, &grouped_vals);
 
     for (size_t i = 0; i < uniq_keys.size(); ++i) {
+      auto &vals = grouped_vals[i];
       int key = uniq_keys[i];
-      // use the same array for merging to guarantee that pull always happens
-      // after the previous push on this key
-      auto& recv_buf = comm_buf_[key];
-      if (recv_buf.is_none()) {
-        // it may happen for the first time a no-rank-0 worker pull the weight.
-        recv_buf = NDArray(
-          grouped_vals[i][0]->shape(), pinned_ctx_, false, grouped_vals[i][0]->dtype());
+      auto stype = vals[0]->storage_type();
+      if (stype == kDefaultStorage) {
+        LOG(FATAL) << "NOT REACHED";
+        PullKey(key, priority, *vals[0]);
+        comm_->Broadcast(key, comm_buf_[key], vals, priority);
+      } else if (stype == kRowSparseStorage) {
+        // Wait for all the previous pushes to finish
+        //Barrier();
+        vals[0]->WaitToRead();
+        using namespace rowsparse;
+        MSHADOW_INT_TYPE_SWITCH(vals[0]->aux_type(kIdx), IType, {
+          auto indices = vals[0]->aux_data(kIdx).dptr<IType>();
+          auto num_rows = vals[0]->aux_shape(kIdx)[0];
+          LOG(INFO) << "pulling " << num_rows << " rows "; 
+          // pull each row
+          for (int i = 0; i < num_rows; i++) {
+            auto row_id = indices[i];
+            std::vector<NDArray> grouped_slice;
+            for (auto val : vals) {
+              CHECK_EQ(val->aux_shape(kIdx)[0], val->aux_shape(kIdx)[0])
+                       << "inconsistent aux shape detected";
+              grouped_slice.emplace_back(val->Slice(row_id, row_id + 1));
+            }
+            CHECK_GT(grouped_slice.size(), 0);
+            PullKey(key + row_id, priority, grouped_slice[0]);
+            //PullKey(key + row_id, priority, *vals[0]);
+            LOG(INFO) << "Done requesting pulling row " << key + row_id;
+            comm_buf_[key + row_id].WaitToRead();
+            LOG(INFO) << "comm buf ready to read";
+            comm_->Broadcast(key, comm_buf_[key + row_id], grouped_slice, priority);
+            //comm_->Broadcast(key, comm_buf_[key + row_id], vals, priority);
+            LOG(INFO) << "broadcast returns";
+          }
+        });
+      } else {
+        LOG(FATAL) << "unknown storage type " << stype;
       }
-#if MKL_EXPERIMENTAL == 1
-      mkl_set_tblob_eager_mode(recv_buf.data());
-#endif
-      real_t* data = static_cast<real_t*>(recv_buf.data().dptr_);
-      size_t size = recv_buf.shape().Size();
-
-      auto pull_from_servers = [this, key, data, size](
-          RunContext rctx, Engine::CallbackOnComplete cb) {
-        // convert to ps keys
-        PSKV& pskv = EncodeKey(key, size);
-
-        // issue pull, false means no delete
-        auto vals = new ps::SArray<real_t>(data, size, false);
-        CHECK_NOTNULL(ps_worker_)->ZPull(
-        pskv.keys, vals, &pskv.lens, 0, [vals, cb](){ delete vals; cb(); });
-      };
-
-      CHECK_NOTNULL(Engine::Get())->PushAsync(
-          pull_from_servers,
-          pinned_ctx_,
-          {},
-          {recv_buf.var()},
-          FnProperty::kNormal,
-          priority,
-          PROFILER_MESSAGE("KVStoreDistPull"));
-
-      comm_->Broadcast(key, recv_buf, grouped_vals[i], priority);
     }
   }
 
@@ -202,43 +224,107 @@ class KVStoreDist : public KVStoreLocal {
       int key = uniq_keys[i];
       const auto& vals = grouped_vals[i];
       NDArray merged = do_merge ? comm_->Reduce(key, vals, priority) : vals[0];
-
-      auto& send_buf = comm_buf_[key];
-      if (merged.ctx().dev_mask() == cpu::kDevMask) {
-        send_buf = merged;  // avoid memory copy
+      if (merged.storage_type() == kDefaultStorage) {
+        PushKey(key, merged, priority);
       } else {
-        if (send_buf.is_none()) {
-          send_buf = NDArray(merged.shape(), pinned_ctx_, false, merged.dtype());
-        }
-        CopyFromTo(merged, &send_buf);
+        using namespace rowsparse;
+        merged.WaitToRead();
+        if (!merged.storage_initialized()) return;
+        MSHADOW_INT_TYPE_SWITCH(merged.aux_type(kIdx), IType, {
+          auto indices = merged.aux_data(kIdx).dptr<IType>();
+          auto num_rows = merged.aux_shape(kIdx)[0];
+          for (int j = 0; j < num_rows; j++) {
+            auto row_id = indices[j];
+            auto row_slice = merged.Slice(row_id, row_id + 1);
+            LOG(INFO) << "var src " << merged.var() << " var slice " << row_slice.var();
+            PushKey(key + row_id, row_slice, priority);
+          }
+        });
       }
-
-      // push to servers
-      send_buf.WaitToRead();
-      size_t size = send_buf.shape().Size();
-#if MKL_EXPERIMENTAL == 1
-      mkl_set_tblob_eager_mode(send_buf.data());
-#endif
-      real_t* data = static_cast<real_t*>(send_buf.data().dptr_);
-      auto push_to_servers =
-          [this, key, data, size](RunContext rctx, Engine::CallbackOnComplete cb) {
-         // convert to ps keys
-        PSKV& pskv = EncodeKey(key, size);
-
-        // do push. false means no delete
-        ps::SArray<real_t> vals(data, size, false);
-        CHECK_NOTNULL(ps_worker_)->ZPush(
-        pskv.keys, vals, pskv.lens, 0, [cb]() { cb(); });
-      };
-      Engine::Get()->PushAsync(
-          push_to_servers,
-          pinned_ctx_,
-          {send_buf.var()},
-          {},
-          FnProperty::kNormal,
-          priority,
-          PROFILER_MESSAGE("KVStoreDistPush"));
     }
+  }
+  void PushKey(int key, const NDArray& merged, int priority) {
+    LOG(INFO) << "WAIT1";
+    merged.WaitToRead();
+    auto& send_buf = comm_buf_[key];
+    if (merged.ctx().dev_mask() == cpu::kDevMask && merged.storage_type() == send_buf.storage_type()) {
+      //LOG(INFO) << "no copy - just assign";
+      send_buf = merged;  // avoid memory copy
+      //CopyFromTo(merged, &send_buf);
+    } else {
+    //{
+      if (send_buf.is_none()) {
+        send_buf = NDArray(merged.shape(), pinned_ctx_, false, merged.dtype());
+      }
+      CopyFromTo(merged, &send_buf);
+    }
+
+    LOG(INFO) << "WAIT2";
+    // push to servers
+    send_buf.WaitToRead();
+    size_t size = send_buf.shape().Size();
+#if MKL_EXPERIMENTAL == 1
+    mkl_set_tblob_eager_mode(send_buf.data());
+#endif
+    real_t* data = static_cast<real_t*>(send_buf.data().dptr_);
+    auto push_to_servers =
+        [this, key, data, size](RunContext rctx, Engine::CallbackOnComplete cb) {
+       // convert to ps keys
+      PSKV& pskv = EncodeKey(key, size);
+      LOG(INFO) << "Send ZPush " << pskv.keys << pskv.lens << "size = " << size;
+
+      // do push. false means no delete
+      ps::SArray<real_t> vals(data, size, false);
+      CHECK_NOTNULL(ps_worker_)->ZPush(
+      pskv.keys, vals, pskv.lens, 0, [cb]() { cb(); LOG(INFO) << "ZPush done";});
+    };
+    Engine::Get()->PushAsync(
+        push_to_servers,
+        pinned_ctx_,
+        {send_buf.var()},
+        {},
+        FnProperty::kNormal,
+        priority,
+        PROFILER_MESSAGE("KVStoreDistPush"));
+    send_buf.WaitToWrite();
+  }
+
+  void PullKey(int key, int priority, const NDArray& src) {
+    // use the same array for merging to guarantee that pull always happens
+    // after the previous push on this key
+    auto& recv_buf = comm_buf_[key];
+    if (recv_buf.is_none()) {
+      // it may happen for the first time a no-rank-0 worker pull the weight.
+      recv_buf = NDArray(
+        src.shape(), pinned_ctx_, false, src.dtype());
+    }
+#if MKL_EXPERIMENTAL == 1
+    mkl_set_tblob_eager_mode(recv_buf.data());
+#endif
+    real_t* data = static_cast<real_t*>(recv_buf.data().dptr_);
+    size_t size = recv_buf.shape().Size();
+
+    auto pull_from_servers = [this, key, data, size](
+        RunContext rctx, Engine::CallbackOnComplete cb) {
+      // convert to ps keys
+      PSKV& pskv = EncodeKey(key, size);
+
+      // issue pull, false means no delete
+      auto vals = new ps::SArray<real_t>(data, size, false);
+      LOG(INFO) << "Send ZPull " << pskv.keys << pskv.lens << "size = " << size;
+      CHECK_NOTNULL(ps_worker_)->ZPull(
+      pskv.keys, vals, &pskv.lens, 0, [vals, cb](){ delete vals; cb(); LOG(INFO) << "DONE PULL";});
+    };
+    recv_buf.WaitToWrite();
+    LOG(INFO) << "push async PULL";
+    CHECK_NOTNULL(Engine::Get())->PushAsync(
+        pull_from_servers,
+        pinned_ctx_,
+        {},
+        {recv_buf.var()},
+        FnProperty::kNormal,
+        priority,
+        PROFILER_MESSAGE("KVStoreDistPull"));
   }
 
   /**

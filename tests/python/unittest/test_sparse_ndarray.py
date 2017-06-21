@@ -166,11 +166,15 @@ def test_sparse_nd_slice():
     def check_rsp_slice(shape):
         storage_type = 'row_sparse'
         B, _ = rand_sparse_ndarray(shape, storage_type)
+        while B.indices.shape[0] == 0:
+            B, _ = rand_sparse_ndarray(shape, storage_type)
         np = B.asnumpy()
-        begin = rnd.randint(0, max(B.indices.shape[0], 1))
+        idx = rnd.randint(0, B.indices.shape[0])
+        begin = B.indices.asnumpy()[idx]
         end = begin + 1
         nd_slice = B._slice(begin, end)
-        assert same(nd_slice.asnumpy(), np[begin:end])
+        assert same(nd_slice.asnumpy(), np[begin:end]), (nd_slice.asnumpy(), np[begin:end], np, idx)
+    shape=(3,3)
     check_rsp_slice(shape)
 
 def test_sparse_nd_equal():
@@ -401,5 +405,7 @@ def test_sparse_ndarray_save_load():
 
 
 if __name__ == '__main__':
-    import nose
-    nose.runmodule()
+    #import nose
+    #nose.runmodule()
+    for i in range(100):
+        test_sparse_nd_slice()

@@ -152,19 +152,16 @@ NDArray NDArray::Slice(index_t begin, index_t end) const {
     // TODO(haibin) support auto_grad
     TShape sliced_shape = shape();
     sliced_shape[0] = end - begin;
-    NDArray ret(storage_type(), sliced_shape,
-                ctx(), true, dtype_, ptr_->aux_types,
-                {TShape(Shape1(0))});
+    NDArray ret(sliced_shape, ctx(), true, dtype_);
     NDArray src = *this;
     // destination NDArray shares the same variable
     ret.ptr_->var = var();
 
+
     Engine::Get()->PushSync([src, ret, begin, end](RunContext ctx) {
       NDArray dst = ret;
       // create a new chunk for dst NDArray
-      NDArray::Chunk chunk = *src.ptr_;
-      // void indptr storage handle
-      chunk.aux_handles[kIdx] = Storage::Handle();
+      NDArray::Chunk chunk = *dst.ptr_;
       if (src.ctx().dev_mask() == cpu::kDevMask) {
         auto s = ctx.get_stream<cpu>();
         MSHADOW_INT_TYPE_SWITCH(src.aux_type(kIdx), IType, {
@@ -188,20 +185,13 @@ NDArray NDArray::Slice(index_t begin, index_t end) const {
             }
             if (src_idx[high] == (int64_t) begin) ret = high;
             if (src_idx[low] == (int64_t) begin) ret = low;
-            if (ret == -1) {
-              // no result
-              return;
-            }
-            chunk.CheckAndAllocAuxData(kIdx, Shape1(1));
-            IType* dst_idx = static_cast<IType*>(chunk.aux_handles[kIdx].dptr);
-            dst_idx[0] = 0;
-            IType offset = src_idx[ret];
-            DType* values = static_cast<DType*>(chunk.shandle.dptr);
+            CHECK_NE(ret, -1)
+               << "did not find row `begin` in the indices of this row_sparse NDArray";
+            DType* values = static_cast<DType*>(src.ptr_->shandle.dptr);
             TShape storage_shape = dst.shape();
-            storage_shape[0] = 1;
-            chunk.storage_shape = storage_shape;
             const auto unit_len = storage_shape.ProdShape(1, storage_shape.ndim());
-            chunk.shandle.dptr = values + offset * unit_len;
+            chunk.shandle.dptr = values + ret * unit_len;
+            chunk.delay_alloc = false;
             chunk.static_data = true;
             chunk.skip_delete_var = true;
             // update dst chunk

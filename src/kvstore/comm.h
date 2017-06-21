@@ -49,6 +49,17 @@ class Comm {
       const std::vector<NDArray*> dst, int priority) = 0;
 
   /**
+   * \brief copy from src to dst[i] for every i
+   */
+  void Broadcast(int key, const NDArray& src,
+                 std::vector<NDArray> dst, int priority) {
+    auto size = dst.size();
+    std::vector<NDArray*> dst_ptr(size);
+    for (size_t i = 0; i < size; i++) dst_ptr[i] = new NDArray(dst[i]);
+    Broadcast(key, src, dst_ptr, priority);
+  }
+
+  /**
    * \brief return a pinned contex
    */
   Context pinned_ctx() const {
@@ -86,10 +97,15 @@ class CommCPU : public Comm {
                         int priority) override {
     // avoid extra copy for single device, but it may bring problems for
     // abnormal usage of kvstore
-    if (src.size() == 1) {
-      return src[0];
-    }
     auto& buf = merge_buf_[key];
+    if (src.size() == 1) {
+      if (src[0].storage_type() == buf.merged.storage_type()) {
+        return src[0];
+      } else {
+        CopyFromTo(src[0], &buf.merged);
+      }
+      return buf.merged;
+    }
     if (buf.merged.storage_type() == kDefaultStorage) {
       std::vector<Engine::VarHandle> const_vars(src.size() - 1);
       std::vector<NDArray> reduce(src.size());
