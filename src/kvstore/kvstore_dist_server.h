@@ -96,6 +96,7 @@ class KVStoreDistServer {
     ps_server_->set_request_handle(
         std::bind(&KVStoreDistServer::DataHandleEx, this, _1, _2, _3));
     sync_mode_ = false;
+    row_sparse_verbose_ = dmlc::GetEnv("MXNET_KVSTORE_DIST_ROW_SPARSE_VERBOSE", false);
   }
 
   ~KVStoreDistServer() {
@@ -174,7 +175,7 @@ class KVStoreDistServer {
       real_t* data = req_data.vals.data();
       auto& stored = store_[master_key];
       if (stored.is_none()) {
-        // LOG(INFO) << "initial push: " << master_key << " size = " << num_rows * unit_len;
+        if (row_sparse_verbose_) LOG(INFO) << "initial push: " << master_key;
         // initialization
         size_t ds[] = {num_rows, (size_t) unit_len};
         TShape dshape(ds, ds + 2);
@@ -189,7 +190,7 @@ class KVStoreDistServer {
       }
       // synced push
       if (sync_mode_) {
-        // LOG(INFO) << "sync push: " << master_key;
+        if (row_sparse_verbose_) LOG(INFO) << "sync push: " << master_key;
         size_t offset = 0;
         auto& stored = store_[master_key];
         // merge updates
@@ -240,22 +241,23 @@ class KVStoreDistServer {
         }
       } else {
         // async push
+        if (row_sparse_verbose_) LOG(INFO) << "async push: " << master_key;
         auto& stored = store_[master_key];
+        std::vector<int64_t> indices(num_rows);
         for (size_t i = 1; i <= num_rows; i++) {
           int key = DecodeKey(req_data.keys[i]);
           auto row_id = key - master_key;
-          auto len = req_data.lens[i];
-          size_t ds[] = {(size_t)len};
-          TShape dshape(ds, ds + 1);
-          TBlob recv_blob(data, // NOLINT(*)
-                          dshape, cpu::kDevMask);
-          NDArray recved = NDArray(recv_blob, 0);
-          NDArray slice = stored.At(row_id);
-          exec_.Exec([this, key, &recved, &slice](){
-              CHECK(updater_);
-              updater_(key, recved, &slice);
-            });
+          indices[i - 1] = row_id;
         }
+        TBlob idx_blob(indices.data(), mshadow::Shape1(num_rows), cpu::kDevMask);
+        size_t ds[] = {(size_t) unit_len * num_rows};
+        TShape dshape(ds, ds + 1);
+        TBlob recv_blob(data, dshape, cpu::kDevMask); // NOLINT(*)
+        NDArray recved(kRowSparseStorage, stored.shape(), recv_blob, {idx_blob}, 0);
+        exec_.Exec([this, master_key, &recved, &stored](){
+            CHECK(updater_);
+            updater_(master_key, recved, &stored);
+          });
         server->Response(req_meta);
         stored.WaitToRead();
       }
@@ -391,6 +393,8 @@ class KVStoreDistServer {
   Executor exec_;
 
   ps::KVServer<float>* ps_server_;
+  // whether to LOG verbose information
+  bool row_sparse_verbose_;
 };
 
 }  // namespace kvstore
