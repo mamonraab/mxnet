@@ -8,7 +8,7 @@ import time
 
 def check_diff_to_scalar(A, x):
     """ assert A == x"""
-    assert(np.sum(np.abs((A - x).asnumpy())) == 0), A.asnumpy()
+    assert(np.sum(np.abs((A - x).asnumpy())) == 0), (A.asnumpy(), x)
 
 # setup
 keys = ['3', '5', '7']
@@ -16,7 +16,7 @@ rsp_keys = ['9', '11', '13']
 
 rate = 2
 shape = (2, 2)
-big_shape = (1200, 1200)        # big than BIGARRAY_BOUND
+big_shape = (1200, 1200)        # bigger than BIGARRAY_BOUND
 
 
 def init_kv():
@@ -89,7 +89,7 @@ def test_sync_push_pull_row_sparse():
     #print("expect ", expected.asnumpy())
 
     check_diff_to_scalar(val, expected)
-    # print('done')
+    print('done')
     #val2 = mx.nd.zeros(big_shape)
     #kv.pull(99, out = val2)
     #check_diff_to_scalar(val2, num)

@@ -223,6 +223,8 @@ class KVStoreDist : public KVStoreLocal {
       auto& send_buf = comm_buf_[key];
       const auto storage_type = merged.storage_type();
       if (merged.ctx().dev_mask() == cpu::kDevMask) {
+        // make sure the previous pull is completed
+        send_buf.WaitToWrite();
         send_buf = merged;  // avoid memory copy
       } else {
         if (send_buf.is_none()) {
@@ -318,7 +320,9 @@ class KVStoreDist : public KVStoreLocal {
       mkl_set_tblob_eager_mode(send_buf.data());
 #endif
       real_t* data = static_cast<real_t*>(send_buf.data().dptr_);
-      if (!send_buf.storage_initialized()) return;
+      if (!send_buf.storage_initialized()) {
+        LOG(INFO) << "warning: operation to push all zeros is ignored";
+      }
       size_t num_rows = send_buf.aux_shape(kIdx).Size();
       const auto offsets = send_buf.aux_data(kIdx).dptr<int64_t>();
       const auto unit_len = send_buf.shape().ProdShape(1, send_buf.shape().ndim());
