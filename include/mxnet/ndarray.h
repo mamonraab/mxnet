@@ -210,7 +210,7 @@ class NDArray {
    * nnz that is smaller than nnz1+nnz2. Therefore, the storage shape's size
    * needs to be shrunk from nnz1+nnz2 to nnz.
    */
-  inline void set_storage_shape(const TShape& sshape) {
+  inline void set_storage_shape(const TShape& sshape) const {
     CHECK(storage_type() != kDefaultStorage);
     ptr_->storage_shape = sshape;
   }
