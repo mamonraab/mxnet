@@ -15,6 +15,7 @@
 #include <vector>
 #include "ps/ps.h"
 #include "mxnet/kvstore.h"
+#include "../operator/tensor/elemwise_binary_op.h"
 
 namespace mxnet {
 namespace kvstore {
@@ -146,7 +147,7 @@ class KVStoreDistServer {
     }
     return;
   }
-
+  /*
   inline void MergeUpdates(const NDArray& recved, int key,
                            std::unordered_set<int> *change_set) {
     auto& merged = merge_buf_[key];
@@ -160,7 +161,7 @@ class KVStoreDistServer {
       merged += recved;
     }
     change_set->insert(key);
-  }
+  }*/
 
   void DataHandleRowSparse(const ps::KVMeta& req_meta,
                        const ps::KVPairs<real_t>& req_data,
@@ -190,60 +191,79 @@ class KVStoreDistServer {
       }
       // synced push
       if (sync_mode_) {
+        // synced push
         if (row_sparse_verbose_) LOG(INFO) << "sync push: " << master_key;
-        size_t offset = 0;
-        auto& stored = store_[master_key];
-        // merge updates
-        auto& request_buf = request_buf_[master_key];
-        for (size_t i = 1; i <= num_rows; i++) {
-          // TODO(haibin) decode once and cache result
-          int key = DecodeKey(req_data.keys[i]);
-          auto len = req_data.lens[i];
-          size_t ds[] = {(size_t)len};
-          TShape dshape(ds, ds + 1);
-          TBlob recv_blob(data, // NOLINT(*)
-                          dshape, cpu::kDevMask);
-          NDArray recved = NDArray(recv_blob, 0);
-          MergeUpdates(recved, key, &request_buf.change_set);
-          offset += len;
+        auto& merged = merge_buf_[master_key];
+        if (merged.array.is_none()) {
+          merged.array = NDArray(kRowSparseStorage, stored.shape(), Context());
         }
-        // perform updates
-        request_buf.requests.push_back(req_meta);
-        if (request_buf.requests.size() == (size_t) ps::NumWorkers()) {
+
+        std::vector<int64_t> indices(num_rows);
+        // TODO refactor sparse gradient constructor
+        for (size_t i = 1; i <= num_rows; i++) {
+          int key = DecodeKey(req_data.keys[i]);
+          auto row_id = key - master_key;
+          indices[i - 1] = row_id;
+        }
+        TBlob idx_blob(indices.data(), mshadow::Shape1(num_rows), cpu::kDevMask);
+        size_t ds[] = {(size_t) unit_len * num_rows};
+        TShape dshape(ds, ds + 1);
+        TBlob recv_blob(data, dshape, cpu::kDevMask); // NOLINT(*)
+        NDArray recved(kRowSparseStorage, stored.shape(), recv_blob, {idx_blob}, 0);
+
+        if (merged.request.size() == 0) {
+          CopyFromTo(recved, &merged.array, 0);
+        } else {
+          NDArray out(kRowSparseStorage, stored.shape(), Context());
+          std::vector<Engine::VarHandle> const_vars;
+          const_vars.push_back(recved.var());
+          const_vars.push_back(merged.array.var());
+
+          using namespace mshadow;
+          Engine::Get()->PushSync([recved, merged, out](RunContext ctx) {
+              std::vector<NDArray> inputs, outputs;
+              inputs.push_back(recved);
+              inputs.push_back(merged.array);
+              outputs.push_back(out);
+              op::BinaryComputeRspRsp<cpu, cpu>({}, {}, inputs, {}, outputs);
+            }, recved.ctx(), const_vars, {out.var()},
+            FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
+          //CommCPU::ReduceSumCPUExSerial(in, &out);
+          CopyFromTo(out, &merged.array, 0);
+        }
+
+        // Sync Apply Updates
+        // TODO(haibin) refactor
+        merged.request.push_back(req_meta);
+
+        if (merged.request.size() == (size_t) ps::NumWorkers()) {
           // let the main thread to execute updater_, which is necessary for python
-          for (auto key : request_buf.change_set) {
-            // slice a row
-            auto row_id = key - master_key;
-            NDArray slice = stored.At(row_id);
-            NDArray update = merge_buf_[key];
-            if (updater_) {
-              exec_.Exec([this, key, &update, &slice](){
-                  CHECK(updater_);
-                  updater_(key, update, &slice);
-                });
-            } else {
-              // if no updater, just copy
-              CopyFromTo(update, &slice);
-            }
-            slice.WaitToRead();
+          if (updater_) {
+            exec_.Exec([this, master_key, &merged, &stored](){
+                CHECK(updater_);
+                updater_(master_key, merged.array, &stored);
+              });
+          } else {
+            // if no updater, just copy
+            CopyFromTo(merged.array, &stored);
           }
-          request_buf.change_set.clear();
-          // LOG(INFO) << "RESPONSE SYNC to " << request_buf.requests.size() << " clients";
-          for (const auto& req : request_buf.requests) {
+          if (row_sparse_verbose_) {
+            LOG(INFO) << "sync response to " << merged.request.size() << " workers";
+          }
+          for (const auto& req : merged.request) {
             server->Response(req);
           }
-          request_buf.requests.clear();
+          merged.request.clear();
+          stored.WaitToRead();
         } else {
-          for (size_t i = 1; i <= num_rows; i++) {
-            int key = DecodeKey(req_data.keys[i]);
-            merge_buf_[key].WaitToRead();
-          }
+          merged.array.WaitToRead();
         }
       } else {
         // async push
         if (row_sparse_verbose_) LOG(INFO) << "async push: " << master_key;
         auto& stored = store_[master_key];
         std::vector<int64_t> indices(num_rows);
+        // TODO refactor sparse gradient constructor
         for (size_t i = 1; i <= num_rows; i++) {
           int key = DecodeKey(req_data.keys[i]);
           auto row_id = key - master_key;
@@ -263,6 +283,7 @@ class KVStoreDistServer {
       }
     } else {
       // pull
+      if (row_sparse_verbose_) LOG(INFO) << "pull: " << master_key;
       ps::KVPairs<real_t> response;
       auto& stored = store_[master_key];
       CHECK(!stored.is_none()) << "init " << master_key << " first";
@@ -270,8 +291,7 @@ class KVStoreDistServer {
       auto unit_len = shape.ProdShape(1, shape.ndim());
       const float* data = stored.data().dptr<float>();
       auto len = unit_len * num_rows;
-      // LOG(INFO) << "received pull: " << len;
-      // concat response values
+      // concat values
       response.vals.resize(len);
       for (size_t i = 1; i <= num_rows; i++) {
         int key = DecodeKey(req_data.keys[i]);
@@ -321,29 +341,36 @@ class KVStoreDistServer {
       } else if (sync_mode_) {
         // synced push
         auto& merged = merge_buf_[key];
-        auto& request_buf = request_buf_[key];
-        MergeUpdates(recved, key, &request_buf.change_set);
-        request_buf.requests.push_back(req_meta);
-        if (request_buf.requests.size() == (size_t) ps::NumWorkers()) {
-          CHECK_EQ(request_buf.change_set.size(), 1);
+        if (merged.array.is_none()) {
+          merged.array = NDArray(dshape, Context());
+        }
+
+        if (merged.request.size() == 0) {
+          CopyFromTo(recved, &merged.array, 0);
+        } else {
+          merged.array += recved;
+        }
+
+        merged.request.push_back(req_meta);
+
+        if (merged.request.size() == (size_t)ps::NumWorkers()) {
           // let the main thread to execute updater_, which is necessary for python
           if (updater_) {
             exec_.Exec([this, key, &merged, &stored](){
                 CHECK(updater_);
-                updater_(key, merged, &stored);
+                updater_(key, merged.array, &stored);
               });
           } else {
             // if no updater, just copy
-            CopyFromTo(merged, &stored);
+            CopyFromTo(merged.array, &stored);
           }
-          request_buf.change_set.clear();
-          for (const auto& req : request_buf.requests) {
+          for (const auto& req : merged.request) {
             server->Response(req);
           }
-          request_buf.requests.clear();
+          merged.request.clear();
           stored.WaitToRead();
         } else {
-          merged.WaitToRead();
+          merged.array.WaitToRead();
         }
       } else {
         // async push
@@ -381,13 +408,12 @@ class KVStoreDistServer {
 
   std::unordered_map<int, NDArray> store_;
 
-  struct RequestBuf {
-    std::vector<ps::KVMeta> requests;
-    std::unordered_set<int> change_set;
+  struct MergeBuf {
+    std::vector<ps::KVMeta> request;
+    NDArray array;
   };
 
-  std::unordered_map<int, NDArray> merge_buf_;
-  std::unordered_map<int, RequestBuf> request_buf_;
+  std::unordered_map<int, MergeBuf> merge_buf_;
 
 
   Executor exec_;

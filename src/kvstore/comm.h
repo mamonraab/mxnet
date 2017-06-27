@@ -177,10 +177,9 @@ class CommCPU : public Comm {
       ReduceSumCPUImpl(dptr, total);
     });
   }
-
+public:
   // serial implementation of reduce sum for row sparse NDArray.
-  // TODO(haibin) use openmp kernel to parallelize the summation
-  inline void ReduceSumCPUExSerial(const std::vector<NDArray> &in, NDArray *out) {
+  inline static void ReduceSumCPUExSerial(const std::vector<NDArray> &in, NDArray *out) {
     using namespace rowsparse;
     using namespace mshadow;
     auto stype = out->storage_type();
@@ -250,7 +249,7 @@ class CommCPU : public Comm {
       });
     });
   }
-
+private:
   template<typename DType, typename IType>
   void ReduceSumCPUExImpl(const std::vector<NDArray>& nds,
                           const std::vector<IType>& uniq_row_idx,

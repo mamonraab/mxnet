@@ -288,8 +288,8 @@ class KVStoreDist : public KVStoreLocal {
        // convert to ps keys in row sparse format
       PSKV& pskv = EncodeRowSparseKey(key, size, num_rows, offsets, unit_len);
       if (this->row_sparse_verbose_) {
-        LOG(INFO) << "pull lens: " << pskv.lens << " keys: " << pskv.keys
-                  << " size: " << size;
+        LOG(INFO) << "worker " << get_rank() << " pull lens: " << pskv.lens << " keys: "
+                  << pskv.keys << " size: " << size;
       }
       auto vals = new ps::SArray<real_t>(data, size, false);
       CHECK_NOTNULL(ps_worker_)->ZPull(pskv.keys, vals, &pskv.lens, kRowSparsePushPull,
@@ -327,8 +327,8 @@ class KVStoreDist : public KVStoreLocal {
        // convert to ps keys in row sparse format
       PSKV& pskv = EncodeRowSparseKey(key, size, num_rows, offsets, unit_len);
       if (this->row_sparse_verbose_) {
-        LOG(INFO) << "push lens: " << pskv.lens << " keys: " << pskv.keys
-                  << " size: " << size;
+        LOG(INFO) << "worker " << get_rank() << " push lens: " << pskv.lens << " keys: "
+                  << pskv.keys << " size: " << size;
       }
       ps::SArray<real_t> vals(data, size, false);
       CHECK_NOTNULL(ps_worker_)->ZPush(pskv.keys, vals, pskv.lens, kRowSparsePushPull, [cb]() {
