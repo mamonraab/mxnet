@@ -21,20 +21,12 @@ big_shape = (1200, 1200)        # bigger than BIGARRAY_BOUND
 
 def init_kv():
     kv = mx.kv.create('dist_sync')
-    # init kv
+    # init kv dns keys
     kv.init(keys, [mx.nd.ones(shape)] * len(keys))
     kv.init('99', mx.nd.ones(big_shape))
-    my_rank = kv.rank
-    nworker = kv.num_workers
-    # init updater on servers
-    kv.set_optimizer(mx.optimizer.create('test', rescale_grad=rate))
-    return kv, my_rank, nworker
-
-def init_kv_rsp():
-    kv = mx.kv.create('dist_sync')
-    # init kv
+    # init kv row_sparse keys
     kv.init(rsp_keys, [mx.nd.ones(shape)._to_rsp()] * len(rsp_keys))
-    # kv.init(99, mx.nd.ones(big_shape))
+    # worker info
     my_rank = kv.rank
     nworker = kv.num_workers
     # init updater on servers
@@ -43,57 +35,59 @@ def init_kv_rsp():
 
 def test_sync_push_pull():
     kv, my_rank, nworker = init_kv()
-    nrepeat = 3
-    for i in range(nrepeat):
-        kv.push('3', mx.nd.ones(shape)*(my_rank+1))
-        kv.push('99', mx.nd.ones(big_shape)*(my_rank+1))
+    def check_default_keys(kv, my_rank, nworker):
+        nrepeat = 3
+        for i in range(nrepeat):
+            kv.push('3', mx.nd.ones(shape)*(my_rank+1))
+            kv.push('99', mx.nd.ones(big_shape)*(my_rank+1))
 
-    num = (nworker + 1 ) * nworker * rate / 2 * nrepeat + 1
-    val = mx.nd.zeros(shape)
-    kv.pull('3', out = val)
-    check_diff_to_scalar(val, num)
+        num = (nworker + 1 ) * nworker * rate / 2 * nrepeat + 1
+        val = mx.nd.zeros(shape)
+        kv.pull('3', out = val)
+        check_diff_to_scalar(val, num)
 
-    val2 = mx.nd.zeros(big_shape)
-    kv.pull('99', out = val2)
-    check_diff_to_scalar(val2, num)
-    print('done')
+        val2 = mx.nd.zeros(big_shape)
+        kv.pull('99', out = val2)
+        check_diff_to_scalar(val2, num)
 
-def test_sync_push_pull_row_sparse():
-    kv, my_rank, nworker = init_kv_rsp()
-    nrepeat = 2
+    def check_row_sparse_keys(kv, my_rank, nworker):
+        #kv, my_rank, nworker = init_kv()
+        nrepeat = 3
 
-    v = mx.nd.zeros(shape)
-    my_row = my_rank % shape[0]
-    for col in range(shape[1]):
-        v[my_row][col] = my_rank + 1
-
-    for i in range(nrepeat):
-        kv.push('9', v._to_rsp())
-        # kv.push(99, mx.nd.ones(big_shape)*(my_rank+1))
-
-    # pull a subset of rows this worker is interested in
-    val = v.copyto(mx.cpu())._to_rsp()
-    kv.pull('9', out = val)
-
-    expected =  mx.nd.zeros(shape)
-    # initial value
-    for col in range(shape[1]):
-        expected[my_row][col] = 1
-    # apply updates from workers
-    for rank in range(nworker):
-        row = rank % shape[0]
-        if row != my_row:
-            continue
+        v = mx.nd.zeros(shape)
+        my_row = my_rank % shape[0]
         for col in range(shape[1]):
-            expected[my_row][col] += (rank + 1) * rate * nrepeat
-    #print("expect ", expected.asnumpy())
+            v[my_row][col] = my_rank + 1
 
-    check_diff_to_scalar(val, expected)
+        for i in range(nrepeat):
+            kv.push('9', v._to_rsp())
+            # kv.push(99, mx.nd.ones(big_shape)*(my_rank+1))
+
+        # pull a subset of rows this worker is interested in
+        val = v.copyto(mx.cpu())._to_rsp()
+        kv.pull('9', out = val)
+
+        expected =  mx.nd.zeros(shape)
+        # initial value
+        for col in range(shape[1]):
+            expected[my_row][col] = 1
+        # apply updates from workers
+        for rank in range(nworker):
+            row = rank % shape[0]
+            if row != my_row:
+                continue
+            for col in range(shape[1]):
+                expected[my_row][col] += (rank + 1) * rate * nrepeat
+        #print("expect ", expected.asnumpy())
+        check_diff_to_scalar(val, expected)
+
+        #val2 = mx.nd.zeros(big_shape)
+        #kv.pull(99, out = val2)
+        #check_diff_to_scalar(val2, num)
+
+    check_default_keys(kv, my_rank, nworker)
+    check_row_sparse_keys(kv, my_rank, nworker)
     print('done')
-    #val2 = mx.nd.zeros(big_shape)
-    #kv.pull(99, out = val2)
-    #check_diff_to_scalar(val2, num)
 
 if __name__ == "__main__":
     test_sync_push_pull()
-    test_sync_push_pull_row_sparse()

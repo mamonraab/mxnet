@@ -97,7 +97,7 @@ class KVStoreDistServer {
     ps_server_->set_request_handle(
         std::bind(&KVStoreDistServer::DataHandleEx, this, _1, _2, _3));
     sync_mode_ = false;
-    row_sparse_verbose_ = dmlc::GetEnv("MXNET_KVSTORE_DIST_ROW_SPARSE_VERBOSE", false);
+    log_verbose_ = dmlc::GetEnv("MXNET_KVSTORE_DIST_ROW_SPARSE_VERBOSE", false);
   }
 
   ~KVStoreDistServer() {
@@ -176,7 +176,7 @@ class KVStoreDistServer {
       real_t* data = req_data.vals.data();
       auto& stored = store_[master_key];
       if (stored.is_none()) {
-        if (row_sparse_verbose_) LOG(INFO) << "initial push: " << master_key;
+        if (log_verbose_) LOG(INFO) << "initial push: " << master_key;
         // initialization
         size_t ds[] = {num_rows, (size_t) unit_len};
         TShape dshape(ds, ds + 2);
@@ -192,7 +192,7 @@ class KVStoreDistServer {
       // synced push
       if (sync_mode_) {
         // synced push
-        if (row_sparse_verbose_) LOG(INFO) << "sync push: " << master_key;
+        if (log_verbose_) LOG(INFO) << "sync push: " << master_key;
         auto& merged = merge_buf_[master_key];
         if (merged.array.is_none()) {
           merged.array = NDArray(kRowSparseStorage, stored.shape(), Context());
@@ -218,7 +218,7 @@ class KVStoreDistServer {
           std::vector<Engine::VarHandle> const_vars;
           const_vars.push_back(recved.var());
           const_vars.push_back(merged.array.var());
-
+          // accumulate row_sparse gradients
           using namespace mshadow;
           Engine::Get()->PushSync([recved, merged, out](RunContext ctx) {
               std::vector<NDArray> inputs, outputs;
@@ -228,7 +228,6 @@ class KVStoreDistServer {
               op::BinaryComputeRspRsp<cpu, cpu>({}, {}, inputs, {}, outputs);
             }, recved.ctx(), const_vars, {out.var()},
             FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
-          //CommCPU::ReduceSumCPUExSerial(in, &out);
           CopyFromTo(out, &merged.array, 0);
         }
 
@@ -247,7 +246,7 @@ class KVStoreDistServer {
             // if no updater, just copy
             CopyFromTo(merged.array, &stored);
           }
-          if (row_sparse_verbose_) {
+          if (log_verbose_) {
             LOG(INFO) << "sync response to " << merged.request.size() << " workers";
           }
           for (const auto& req : merged.request) {
@@ -260,7 +259,7 @@ class KVStoreDistServer {
         }
       } else {
         // async push
-        if (row_sparse_verbose_) LOG(INFO) << "async push: " << master_key;
+        if (log_verbose_) LOG(INFO) << "async push: " << master_key;
         auto& stored = store_[master_key];
         std::vector<int64_t> indices(num_rows);
         // TODO refactor sparse gradient constructor
@@ -283,7 +282,7 @@ class KVStoreDistServer {
       }
     } else {
       // pull
-      if (row_sparse_verbose_) LOG(INFO) << "pull: " << master_key;
+      if (log_verbose_) LOG(INFO) << "pull: " << master_key;
       ps::KVPairs<real_t> response;
       auto& stored = store_[master_key];
       CHECK(!stored.is_none()) << "init " << master_key << " first";
@@ -295,7 +294,9 @@ class KVStoreDistServer {
       response.vals.resize(len);
       for (size_t i = 1; i <= num_rows; i++) {
         int key = DecodeKey(req_data.keys[i]);
-        const auto src = data + key * unit_len;
+        int64_t row_id = key - master_key;
+        if (log_verbose_) LOG(INFO) << "row_id : " << row_id;
+        const auto src = data + row_id * unit_len;
         auto begin = (i - 1) * unit_len;
         auto end = i * unit_len;
         response.vals.segment(begin, end).CopyFrom(src, unit_len);
@@ -420,7 +421,7 @@ class KVStoreDistServer {
 
   ps::KVServer<float>* ps_server_;
   // whether to LOG verbose information
-  bool row_sparse_verbose_;
+  bool log_verbose_;
 };
 
 }  // namespace kvstore

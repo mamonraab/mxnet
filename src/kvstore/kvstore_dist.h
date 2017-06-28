@@ -43,7 +43,7 @@ class KVStoreDist : public KVStoreLocal {
       }
     }
     bigarray_bound_ = dmlc::GetEnv("MXNET_KVSTORE_BIGARRAY_BOUND", 1000 * 1000);
-    row_sparse_verbose_ = dmlc::GetEnv("MXNET_KVSTORE_DIST_ROW_SPARSE_VERBOSE", false);
+    log_verbose_ = dmlc::GetEnv("MXNET_KVSTORE_DIST_ROW_SPARSE_VERBOSE", false);
   }
 
   virtual ~KVStoreDist() {
@@ -61,6 +61,27 @@ class KVStoreDist : public KVStoreLocal {
     }
   }
 
+  void Init(const std::vector<std::string>& str_keys,
+            const std::vector<NDArray>& values) override {
+    std::vector<int> keys(str_keys.size());
+    for (size_t i = 0; i < str_keys.size(); ++i) {
+      auto &str_key = str_keys[i];
+      CHECK(str_key_dict_.find(str_key) == str_key_dict_.end())
+            << "duplicate init of key " << str_key;
+      auto key = next_str_key_;
+      str_key_dict_[str_key] = key;
+      keys[i] = key;
+      if (values[i].storage_type() == kRowSparseStorage) {
+        // reserve key space for row_sparse keys
+        next_str_key_ += values[i].shape()[0];
+      } else {
+        next_str_key_ += 1;
+      }
+    }
+    Init(keys, values);
+  }
+
+  // TODO(haibin) lazy initialization
   void Init(const std::vector<int>& keys,
             const std::vector<NDArray>& values) override {
     CheckUnique(keys);
@@ -289,7 +310,7 @@ class KVStoreDist : public KVStoreLocal {
       size_t size = num_rows * unit_len;
        // convert to ps keys in row sparse format
       PSKV& pskv = EncodeRowSparseKey(key, size, num_rows, offsets, unit_len);
-      if (this->row_sparse_verbose_) {
+      if (this->log_verbose_) {
         LOG(INFO) << "worker " << get_rank() << " pull lens: " << pskv.lens << " keys: "
                   << pskv.keys << " size: " << size;
       }
@@ -330,7 +351,7 @@ class KVStoreDist : public KVStoreLocal {
 
        // convert to ps keys in row sparse format
       PSKV& pskv = EncodeRowSparseKey(key, size, num_rows, offsets, unit_len);
-      if (this->row_sparse_verbose_) {
+      if (this->log_verbose_) {
         LOG(INFO) << "worker " << get_rank() << " push lens: " << pskv.lens << " keys: "
                   << pskv.keys << " size: " << size;
       }
@@ -433,7 +454,7 @@ class KVStoreDist : public KVStoreLocal {
     int num_servers = krs.size();
     CHECK_GT(num_servers, 0);
 
-    if (size >= bigarray_bound_ && row_sparse_verbose_) {
+    if (size >= bigarray_bound_ && log_verbose_) {
       LOG(INFO) << "WARNING: big row_sparse weight array sharding is not implemented";
     }
     // send it to a single random picked server
@@ -466,7 +487,7 @@ class KVStoreDist : public KVStoreLocal {
   size_t bigarray_bound_;
   /// \brief send & recver buffer
   std::unordered_map<int, NDArray> comm_buf_;
-  bool row_sparse_verbose_;
+  bool log_verbose_;
 };
 
 }  // namespace kvstore
