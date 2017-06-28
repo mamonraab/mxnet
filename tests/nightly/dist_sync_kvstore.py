@@ -51,22 +51,19 @@ def test_sync_push_pull():
         check_diff_to_scalar(val2, num)
 
     def check_row_sparse_keys(kv, my_rank, nworker):
-        #kv, my_rank, nworker = init_kv()
         nrepeat = 3
-
+        # prepare gradient
         v = mx.nd.zeros(shape)
         my_row = my_rank % shape[0]
         for col in range(shape[1]):
             v[my_row][col] = my_rank + 1
-
+        # push
         for i in range(nrepeat):
             kv.push('9', v._to_rsp())
-            # kv.push(99, mx.nd.ones(big_shape)*(my_rank+1))
-
         # pull a subset of rows this worker is interested in
         val = v.copyto(mx.cpu())._to_rsp()
         kv.pull('9', out = val)
-
+        # prepare expected result
         expected =  mx.nd.zeros(shape)
         # initial value
         for col in range(shape[1]):
@@ -80,10 +77,6 @@ def test_sync_push_pull():
                 expected[my_row][col] += (rank + 1) * rate * nrepeat
         #print("expect ", expected.asnumpy())
         check_diff_to_scalar(val, expected)
-
-        #val2 = mx.nd.zeros(big_shape)
-        #kv.pull(99, out = val2)
-        #check_diff_to_scalar(val2, num)
 
     check_default_keys(kv, my_rank, nworker)
     check_row_sparse_keys(kv, my_rank, nworker)

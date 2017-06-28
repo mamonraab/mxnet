@@ -295,7 +295,6 @@ class KVStoreDistServer {
       for (size_t i = 1; i <= num_rows; i++) {
         int key = DecodeKey(req_data.keys[i]);
         int64_t row_id = key - master_key;
-        if (log_verbose_) LOG(INFO) << "row_id : " << row_id;
         const auto src = data + row_id * unit_len;
         auto begin = (i - 1) * unit_len;
         auto end = i * unit_len;
