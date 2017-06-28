@@ -122,6 +122,12 @@ class KVStoreDistServer {
   }
 
  private:
+
+  struct MergeBuf {
+    std::vector<ps::KVMeta> request;
+    NDArray array;
+  };
+
   void CommandHandle(const ps::SimpleData& recved, ps::SimpleApp* app) {
     if (recved.head == kStopServer) {
       exec_.Stop();
@@ -147,21 +153,42 @@ class KVStoreDistServer {
     }
     return;
   }
-  /*
-  inline void MergeUpdates(const NDArray& recved, int key,
-                           std::unordered_set<int> *change_set) {
-    auto& merged = merge_buf_[key];
-    if (merged.is_none()) {
-      merged = NDArray(recved.shape(), Context());
-    }
-    if (change_set->find(key) == change_set->end()) {
-      CopyFromTo(recved, &merged, 0);
+
+  inline void ApplyUpdates(const int key, MergeBuf *merged, NDArray *stored,
+                           ps::KVServer<real_t>* server) {
+    if (merged->request.size() == (size_t) ps::NumWorkers()) {
+      // let the main thread to execute updater_, which is necessary for python
+      if (updater_) {
+        exec_.Exec([this, key, merged, stored](){
+            CHECK(updater_);
+            updater_(key, merged->array, stored);
+          });
+      } else {
+        // if no updater, just copy
+        CopyFromTo(merged->array, stored);
+      }
+      if (log_verbose_)  {
+        LOG(INFO) << "sync response to " << merged->request.size() << " workers";
+      }
+      for (const auto& req : merged->request) {
+        server->Response(req);
+      }
+      merged->request.clear();
+      stored->WaitToRead();
     } else {
-      // TODO(haibin) handle row sparse gradient NDArray with `ReduceSumCPUExParallel`
-      merged += recved;
+      merged->array.WaitToRead();
     }
-    change_set->insert(key);
-  }*/
+  }
+
+  void DecodeRowIds(const ps::SArray<ps::Key> &keys, int64_t *indices,
+                    const int64_t master_key, const int64_t num_rows) {
+    indices[0] = 0;
+    for (int64_t i = 1; i <= num_rows; i++) {
+      int key = DecodeKey(keys[i]);
+      auto row_id = key - master_key;
+      indices[i - 1] = row_id;
+    }
+  }
 
   void DataHandleRowSparse(const ps::KVMeta& req_meta,
                        const ps::KVPairs<real_t>& req_data,
@@ -197,18 +224,15 @@ class KVStoreDistServer {
         if (merged.array.is_none()) {
           merged.array = NDArray(kRowSparseStorage, stored.shape(), Context());
         }
-
+        // indices
         std::vector<int64_t> indices(num_rows);
-        // TODO refactor sparse gradient constructor
-        for (size_t i = 1; i <= num_rows; i++) {
-          int key = DecodeKey(req_data.keys[i]);
-          auto row_id = key - master_key;
-          indices[i - 1] = row_id;
-        }
+        DecodeRowIds(req_data.keys, indices.data(), master_key, num_rows);
+        // data
         TBlob idx_blob(indices.data(), mshadow::Shape1(num_rows), cpu::kDevMask);
         size_t ds[] = {(size_t) unit_len * num_rows};
         TShape dshape(ds, ds + 1);
         TBlob recv_blob(data, dshape, cpu::kDevMask); // NOLINT(*)
+        // row_sparse NDArray
         NDArray recved(kRowSparseStorage, stored.shape(), recv_blob, {idx_blob}, 0);
 
         if (merged.request.size() == 0) {
@@ -219,6 +243,8 @@ class KVStoreDistServer {
           const_vars.push_back(recved.var());
           const_vars.push_back(merged.array.var());
           // accumulate row_sparse gradients
+          // TODO(haibin) override + operator for row_sparse NDArray
+          // instead of calling BinaryComputeRspRsp directly
           using namespace mshadow;
           Engine::Get()->PushSync([recved, merged, out](RunContext ctx) {
               std::vector<NDArray> inputs, outputs;
@@ -230,44 +256,15 @@ class KVStoreDistServer {
             FnProperty::kNormal, 0, PROFILER_MESSAGE_FUNCNAME);
           CopyFromTo(out, &merged.array, 0);
         }
-
-        // Sync Apply Updates
-        // TODO(haibin) refactor
         merged.request.push_back(req_meta);
-
-        if (merged.request.size() == (size_t) ps::NumWorkers()) {
-          // let the main thread to execute updater_, which is necessary for python
-          if (updater_) {
-            exec_.Exec([this, master_key, &merged, &stored](){
-                CHECK(updater_);
-                updater_(master_key, merged.array, &stored);
-              });
-          } else {
-            // if no updater, just copy
-            CopyFromTo(merged.array, &stored);
-          }
-          if (log_verbose_) {
-            LOG(INFO) << "sync response to " << merged.request.size() << " workers";
-          }
-          for (const auto& req : merged.request) {
-            server->Response(req);
-          }
-          merged.request.clear();
-          stored.WaitToRead();
-        } else {
-          merged.array.WaitToRead();
-        }
+        ApplyUpdates(master_key, &merged,  &stored, server);
       } else {
         // async push
         if (log_verbose_) LOG(INFO) << "async push: " << master_key;
         auto& stored = store_[master_key];
+        // indices
         std::vector<int64_t> indices(num_rows);
-        // TODO refactor sparse gradient constructor
-        for (size_t i = 1; i <= num_rows; i++) {
-          int key = DecodeKey(req_data.keys[i]);
-          auto row_id = key - master_key;
-          indices[i - 1] = row_id;
-        }
+        DecodeRowIds(req_data.keys, indices.data(), master_key, num_rows);
         TBlob idx_blob(indices.data(), mshadow::Shape1(num_rows), cpu::kDevMask);
         size_t ds[] = {(size_t) unit_len * num_rows};
         TShape dshape(ds, ds + 1);
@@ -344,34 +341,13 @@ class KVStoreDistServer {
         if (merged.array.is_none()) {
           merged.array = NDArray(dshape, Context());
         }
-
         if (merged.request.size() == 0) {
           CopyFromTo(recved, &merged.array, 0);
         } else {
           merged.array += recved;
         }
-
         merged.request.push_back(req_meta);
-
-        if (merged.request.size() == (size_t)ps::NumWorkers()) {
-          // let the main thread to execute updater_, which is necessary for python
-          if (updater_) {
-            exec_.Exec([this, key, &merged, &stored](){
-                CHECK(updater_);
-                updater_(key, merged.array, &stored);
-              });
-          } else {
-            // if no updater, just copy
-            CopyFromTo(merged.array, &stored);
-          }
-          for (const auto& req : merged.request) {
-            server->Response(req);
-          }
-          merged.request.clear();
-          stored.WaitToRead();
-        } else {
-          merged.array.WaitToRead();
-        }
+        ApplyUpdates(key, &merged,  &stored, server);
       } else {
         // async push
         exec_.Exec([this, key, &recved, &stored](){
@@ -407,18 +383,11 @@ class KVStoreDistServer {
   KVStore::Updater updater_;
 
   std::unordered_map<int, NDArray> store_;
-
-  struct MergeBuf {
-    std::vector<ps::KVMeta> request;
-    NDArray array;
-  };
-
   std::unordered_map<int, MergeBuf> merge_buf_;
 
-
   Executor exec_;
-
   ps::KVServer<float>* ps_server_;
+
   // whether to LOG verbose information
   bool log_verbose_;
 };

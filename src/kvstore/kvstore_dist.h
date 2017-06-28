@@ -343,6 +343,7 @@ class KVStoreDist : public KVStoreLocal {
       real_t* data = static_cast<real_t*>(send_buf.data().dptr_);
       if (!send_buf.storage_initialized()) {
         LOG(INFO) << "warning: operation to push all zeros is ignored";
+        return;
       }
       size_t num_rows = send_buf.aux_shape(kIdx).Size();
       const auto offsets = send_buf.aux_data(kIdx).dptr<int64_t>();
