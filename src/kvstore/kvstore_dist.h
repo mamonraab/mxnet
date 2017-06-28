@@ -159,8 +159,6 @@ class KVStoreDist : public KVStoreLocal {
             priority,
             PROFILER_MESSAGE("KVStoreDistDefaultPull"));
       } else if (storage_type == kRowSparseStorage) {
-        recv_buf.WaitToRead();
-        grouped_vals[i][0]->WaitToRead();
         PullRowSparse(key, &recv_buf, grouped_vals[i][0]->aux_ndarray(rowsparse::kIdx), priority);
       } else {
         LOG(FATAL) << "unknown storage type " << storage_type;

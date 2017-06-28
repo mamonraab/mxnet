@@ -228,8 +228,8 @@ class KVStoreDistServer {
         DecodeRowIds(req_data.keys, indices.data(), master_key, num_rows);
         // data
         TBlob idx_blob(indices.data(), mshadow::Shape1(num_rows), cpu::kDevMask);
-        size_t ds[] = {(size_t) unit_len * num_rows};
-        TShape dshape(ds, ds + 1);
+        size_t ds[] = {(size_t) num_rows, (size_t) unit_len};
+        TShape dshape(ds, ds + 2);
         TBlob recv_blob(data, dshape, cpu::kDevMask); // NOLINT(*)
         // row_sparse NDArray
         NDArray recved(kRowSparseStorage, stored.shape(), recv_blob, {idx_blob}, 0);
@@ -265,8 +265,8 @@ class KVStoreDistServer {
         std::vector<int64_t> indices(num_rows);
         DecodeRowIds(req_data.keys, indices.data(), master_key, num_rows);
         TBlob idx_blob(indices.data(), mshadow::Shape1(num_rows), cpu::kDevMask);
-        size_t ds[] = {(size_t) unit_len * num_rows};
-        TShape dshape(ds, ds + 1);
+        size_t ds[] = {(size_t) num_rows, (size_t) unit_len};
+        TShape dshape(ds, ds + 2);
         TBlob recv_blob(data, dshape, cpu::kDevMask); // NOLINT(*)
         NDArray recved(kRowSparseStorage, stored.shape(), recv_blob, {idx_blob}, 0);
         exec_.Exec([this, master_key, &recved, &stored](){
@@ -346,7 +346,7 @@ class KVStoreDistServer {
           merged.array += recved;
         }
         merged.request.push_back(req_meta);
-        ApplyUpdates(key, &merged,  &stored, server);
+        ApplyUpdates(key, &merged, &stored, server);
       } else {
         // async push
         exec_.Exec([this, key, &recved, &stored](){

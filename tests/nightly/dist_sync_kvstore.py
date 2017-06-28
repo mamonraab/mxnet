@@ -15,7 +15,7 @@ keys = ['3', '5', '7']
 rsp_keys = ['9', '11', '13']
 
 rate = 2
-shape = (2, 2)
+shape = (2, 3)
 big_shape = (1200, 1200)        # bigger than BIGARRAY_BOUND
 
 
