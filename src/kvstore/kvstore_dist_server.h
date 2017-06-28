@@ -122,7 +122,6 @@ class KVStoreDistServer {
   }
 
  private:
-
   struct MergeBuf {
     std::vector<ps::KVMeta> request;
     NDArray array;
