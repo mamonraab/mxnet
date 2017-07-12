@@ -849,7 +849,7 @@ class BaseModule(object):
         """
         raise NotImplementedError()
 
-    def update(self):
+    def update(self, sparse_pull_dict=None):
         """Updates parameters according to the installed optimizer and the gradients computed
         in the previous forward-backward batch.
 
