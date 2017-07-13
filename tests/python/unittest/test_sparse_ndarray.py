@@ -21,10 +21,10 @@ def sparse_nd_ones(shape, stype):
 def check_sparse_nd_elemwise_binary(shapes, stypes, f, g):
     # generate inputs
     nds = []
-    for i, storage_type in enumerate(stypes):
-        if storage_type == 'row_sparse':
-            nd, _ = rand_sparse_ndarray(shapes[i], storage_type)
-        elif storage_type == 'default':
+    for i, stype in enumerate(stypes):
+        if stype == 'row_sparse':
+            nd, _ = rand_sparse_ndarray(shapes[i], stype)
+        elif stype == 'default':
             nd = mx.nd.array(random_arrays(shapes[i]), dtype = np.float32)
         else:
             assert(False)
@@ -91,9 +91,9 @@ def test_sparse_nd_copy():
 
 
 def check_sparse_nd_prop_rsp():
-    storage_type = 'row_sparse'
+    stype = 'row_sparse'
     shape = rand_shape_2d()
-    nd, (v, idx) = rand_sparse_ndarray(shape, storage_type)
+    nd, (v, idx) = rand_sparse_ndarray(shape, stype)
     assert(nd._num_aux == 1)
     assert(nd.indices.dtype == np.int64)
     assert(nd.stype == 'row_sparse')
@@ -150,8 +150,8 @@ def test_sparse_nd_setitem():
 
 def test_sparse_nd_slice():
     def check_sparse_nd_csr_slice(shape):
-        storage_type = 'csr'
-        A, _ = rand_sparse_ndarray(shape, storage_type)
+        stype = 'csr'
+        A, _ = rand_sparse_ndarray(shape, stype)
         A2 = A.asnumpy()
         start = rnd.randint(0, shape[0] - 1)
         end = rnd.randint(start + 1, shape[0])
@@ -317,8 +317,8 @@ def test_sparse_nd_binary_iop():
             rshape = list(oshape)
             lhs = np.random.uniform(0, 1, size=lshape)
             rhs = np.random.uniform(0, 1, size=rshape)
-            lhs_nd = mx.nd.cast_storage(mx.nd.array(lhs), storage_type=stype)
-            rhs_nd = mx.nd.cast_storage(mx.nd.array(rhs), storage_type=stype)
+            lhs_nd = mx.nd.cast_storage(mx.nd.array(lhs), stype=stype)
+            rhs_nd = mx.nd.cast_storage(mx.nd.array(rhs), stype=stype)
             assert_allclose(fn(lhs, rhs),
                             fn(lhs_nd, rhs_nd).asnumpy(),
                             rtol=1e-4, atol=1e-4)
