@@ -5,7 +5,8 @@ import time
 import argparse
 import os
 
-parser = argparse.ArgumentParser(description="Run sparse regression with distributed kvstore",
+parser = argparse.ArgumentParser(description="Run sparse linear regression " \
+                                             "with distributed kvstore",
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--profiler', type=int, default=0,
                     help='whether to use profiler')
@@ -13,16 +14,16 @@ parser.add_argument('--num-epoch', type=int, default=1,
                     help='number of epochs to train')
 parser.add_argument('--batch-size', type=int, default=512,
                     help='number of examples per batch')
-parser.add_argument('--num-batch', type=int, default=10,
+parser.add_argument('--num-batch', type=int, default=99999999,
                     help='number of batches per epoch')
 parser.add_argument('--dummy-iter', type=int, default=0,
                     help='whether to use dummy iterator to exclude io cost')
 parser.add_argument('--kvstore', type=str, default='dist_sync',
-                    help='what kvstore to use (local, dist_sync, etc)')
-parser.add_argument('--logging', type=int, default=0,
-                    help='whether to print the result of metric at the end of each epoch')
+                    help='what kvstore to use [local, dist_sync, etc]')
+parser.add_argument('--log-level', type=str, default='debug',
+                    help='logging level [debug, info, error]')
 parser.add_argument('--dataset', type=str, default='avazu',
-                    help='what dataset to use')
+                    help='what test dataset to use')
 
 class DummyIter(mx.io.DataIter):
     "A dummy iterator that always return the same batch, used for speed testing"
@@ -43,6 +44,7 @@ class DummyIter(mx.io.DataIter):
     def next(self):
         return self.the_batch
 
+# testing dataset sources
 avazu = {
     'data_name': 'avazu-app.t',
     'data_origin_name': 'avazu-app.t.bz2',
@@ -56,21 +58,8 @@ kdda = {
     'url': "https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/binary/kdda.t.bz2",
     'feature_dim': 20216830,
 }
+
 datasets = { 'kdda' : kdda, 'avazu' : avazu }
-
-def dummy_data_iter(num_batch, batch_size, feature_dim):
-    data = np.load('x_512_' + str(feature_dim) + '.npz')
-    indices = data['indices']
-    values = data['values']
-    indptr = data['indptr']
-    data = mx.nd.csr(values, indptr, indices,
-                            (num_batch * batch_size, feature_dim))
-    dns_label = mx.nd.zeros((num_batch * batch_size, 1))
-
-    train_iter = DummyIter(mx.io.NDArrayIter(data=data,
-                                             label={'softmax_label':dns_label},
-                                             batch_size=batch_size))
-    return train_iter, mx.nd.array(indices, dtype='int64')
 
 def regression_model(feature_dim):
      initializer = mx.initializer.Normal()
@@ -83,44 +72,54 @@ def regression_model(feature_dim):
      return model
 
 if __name__ == '__main__':
+
     # arg parser
     args = parser.parse_args()
     num_epoch = args.num_epoch
     num_batch = args.num_batch
     kvstore = args.kvstore
     profiler = args.profiler > 0
-    logging = args.logging > 0
     batch_size = args.batch_size
     dummy_iter = args.dummy_iter
     dataset = args.dataset
+    log_level = args.log_level
 
     # create kvstore
     kv = mx.kvstore.create(kvstore)
     rank = kv.rank
     num_worker = kv.num_workers
-    logging = logging and rank == 0
 
-    # data
-    data_dict = avazu
-    feature_dim = data_dict['feature_dim']
+    # only print log for rank 0 worker
+    import logging
+    if rank != 0:
+        log_level = logging.ERROR
+    elif log_level == 'DEBUG':
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+    head = '%(asctime)-15s %(message)s'
+    logging.basicConfig(level=log_level, format=head)
+
+    # dataset
+    assert(dataset in datasets), "unknown dataset " + dataset
+    metadata = datasets[dataset]
+    feature_dim = metadata['feature_dim']
     if logging:
-        print('preparing data ... ')
+        logging.debug('preparing data ... ')
     data_dir = os.path.join(os.getcwd(), 'data')
-    path = os.path.join(data_dir, data_dict['data_name'])
+    path = os.path.join(data_dir, metadata['data_name'])
     if not os.path.exists(path):
-        get_libsvm_data(data_dir, data_dict['data_name'], data_dict['url'],
-                        data_dict['data_origin_name'])
+        get_libsvm_data(data_dir, metadata['data_name'], metadata['url'],
+                        metadata['data_origin_name'])
         assert os.path.exists(path)
 
+    # data iterator
+    train_data = mx.io.LibSVMIter(data_libsvm=path, data_shape=(feature_dim,),
+                                  batch_size=batch_size, num_parts=num_worker,
+                                  part_index=rank)
     if dummy_iter:
-        train_data, first_batch_rowids = dummy_data_iter(1, batch_size, feature_dim)
-    else:
-        train_data = mx.io.LibSVMIter(data_libsvm=path, data_shape=(feature_dim,),
-                                      batch_size=batch_size, num_parts=num_worker,
-                                      part_index=rank)
-        first_batch = next(iter(train_data))
-        #TODO(haibin) no need to copy after ndarray refactoring
-        first_batch_rowids = first_batch.data[0].indices.copyto(mx.cpu())
+        train_data = DummyIter(train_data)
+
     # model
     model = regression_model(feature_dim)
 
@@ -128,7 +127,7 @@ if __name__ == '__main__':
     mod = mx.mod.Module(symbol=model, data_names=['data'], label_names=['softmax_label'])
     mod.bind(data_shapes=train_data.provide_data, label_shapes=train_data.provide_label)
     mod.init_params(initializer=mx.init.Uniform(scale=.1))
-    sgd = mx.optimizer.SGD(momentum=0.1, clip_gradient=5.0,
+    sgd = mx.optimizer.SGD(momentum=0.0, clip_gradient=5.0,
                            learning_rate=0.1, rescale_grad=1.0/batch_size/num_worker)
     mod.init_optimizer(optimizer=sgd, kvstore=kv)
     # use accuracy as the metric
@@ -141,8 +140,7 @@ if __name__ == '__main__':
         mx.profiler.profiler_set_config(mode='all', filename=name)
         mx.profiler.profiler_set_state('run')
 
-    if logging:
-        print('start training ...')
+    logging.debug('start training ...')
     start = time.time()
     data_iter = iter(train_data)
     for epoch in range(num_epoch):
@@ -172,11 +170,9 @@ if __name__ == '__main__':
                 end_of_batch = True
             # accumulate prediction accuracy
             mod.update_metric(metric, batch.label)
-        if logging:
-            print('epoch %d, %s' % (epoch, metric.get()))
-    end = time.time()
+        logging.info('epoch %d, %s' % (epoch, metric.get()))
     if profiler:
         mx.profiler.profiler_set_state('stop')
-    if rank == 0:
-        time_cost = end - start
-        print('num_worker = ' + str(num_worker) + ', time cost = ' + str(time_cost))
+    end = time.time()
+    time_cost = end - start
+    logging.info('num_worker = ' + str(num_worker) + ', time cost = ' + str(time_cost))

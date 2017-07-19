@@ -275,7 +275,7 @@ class SequentialModule(BaseModule):
 
     def init_optimizer(self, kvstore='local', optimizer='sgd',
                        optimizer_params=(('learning_rate', 0.01),),
-                       force_init=False)
+                       force_init=False):
         """Installs and initializes optimizers.
 
         Parameters
