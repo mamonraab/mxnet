@@ -849,7 +849,7 @@ class BaseModule(object):
         """
         raise NotImplementedError()
 
-    def update(self, sparse_pull_dict=None):
+    def update(self):
         """Updates parameters according to the installed optimizer and the gradients computed
         in the previous forward-backward batch.
 
@@ -932,8 +932,7 @@ class BaseModule(object):
         raise NotImplementedError()
 
     def init_optimizer(self, kvstore='local', optimizer='sgd',
-                       optimizer_params=(('learning_rate', 0.01),), force_init=False,
-                       sparse_pull_dict=None):
+                       optimizer_params=(('learning_rate', 0.01),), force_init=False):
         """Installs and initializes optimizers, as well as initialize kvstore for
            distributed training
 

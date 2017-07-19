@@ -110,7 +110,7 @@ class PythonModule(BaseModule):
         """
         pass
 
-    def update(self, sparse_pull_dict=None):
+    def update(self):
         """Updates parameters according to the installed optimizer and the gradients computed
         in the previous forward-backward batch. Currently we do nothing here. Subclass should
         override this method if contains parameters.
@@ -196,8 +196,7 @@ class PythonModule(BaseModule):
         raise NotImplementedError()
 
     def init_optimizer(self, kvstore='local', optimizer='sgd',
-                       optimizer_params=(('learning_rate', 0.01),), force_init=False,
-                       sparse_pull_dict=None):
+                       optimizer_params=(('learning_rate', 0.01),), force_init=False):
         """Installs and initializes optimizers. By default we do nothing. Subclass should
         override this method if needed.
 

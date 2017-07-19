@@ -63,7 +63,7 @@ def dummy_data_iter(num_batch, batch_size, feature_dim):
     indices = data['indices']
     values = data['values']
     indptr = data['indptr']
-    data = mx.sparse_nd.csr(values, indptr, indices,
+    data = mx.nd.csr(values, indptr, indices,
                             (num_batch * batch_size, feature_dim))
     dns_label = mx.nd.zeros((num_batch * batch_size, 1))
 
@@ -130,8 +130,7 @@ if __name__ == '__main__':
     mod.init_params(initializer=mx.init.Uniform(scale=.1))
     sgd = mx.optimizer.SGD(momentum=0.1, clip_gradient=5.0,
                            learning_rate=0.1, rescale_grad=1.0/batch_size/num_worker)
-    mod.init_optimizer(optimizer=sgd, kvstore=kv,
-                       sparse_pull_dict={'v': [first_batch_rowids]})
+    mod.init_optimizer(optimizer=sgd, kvstore=kv)
     # use accuracy as the metric
     metric = mx.metric.create('MSE')
 
@@ -145,29 +144,34 @@ if __name__ == '__main__':
     if logging:
         print('start training ...')
     start = time.time()
+    data_iter = iter(train_data)
     for epoch in range(num_epoch):
         nbatch = 0
         end_of_batch = False
-        data_iter = iter(train_data)
         data_iter.reset()
         metric.reset()
         next_batch = next(data_iter)
         while not end_of_batch:
             nbatch += 1
             batch = next_batch
+            # TODO(haibin) remove extra copy after Jun's change
+            row_ids = batch.data[0].indices.copyto(mx.cpu())
+            # pull sparse weight
+            index = mod._exec_group.param_names.index('v')
+            kv.row_sparse_pull('v', mod._exec_group.param_arrays[index],
+                               priority=-index, row_ids=[row_ids])
             mod.forward_backward(batch)
+            # update parameters
+            mod.update()
             try:
-                # pre fetch next batch to determine what to pull
+                # pre fetch next batch
                 next_batch = next(data_iter)
-                # TODO(haibin) remove this copy after ndarray is refactored
-                row_ids = next_batch.data[0].indices.copyto(mx.cpu())
                 if nbatch == num_batch:
                     raise StopIteration
             except StopIteration:
-                row_ids = first_batch_rowids
                 end_of_batch = True
-            mod.update(sparse_pull_dict={'v': [row_ids]})  # update parameters
-            mod.update_metric(metric, batch.label)         # accumulate prediction accuracy
+            # accumulate prediction accuracy
+            mod.update_metric(metric, batch.label)
         if logging:
             print('epoch %d, %s' % (epoch, metric.get()))
     end = time.time()

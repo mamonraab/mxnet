@@ -275,8 +275,7 @@ class SequentialModule(BaseModule):
 
     def init_optimizer(self, kvstore='local', optimizer='sgd',
                        optimizer_params=(('learning_rate', 0.01),),
-                       force_init=False,
-                       sparse_pull_dict=None):
+                       force_init=False)
         """Installs and initializes optimizers.
 
         Parameters
@@ -299,8 +298,7 @@ class SequentialModule(BaseModule):
 
         for module in self._modules:
             module.init_optimizer(kvstore=kvstore, optimizer=optimizer,
-                                  optimizer_params=optimizer_params, force_init=force_init,
-                                  sparse_pull_dict=sparse_pull_dict)
+                                  optimizer_params=optimizer_params, force_init=force_init)
 
         self.optimizer_initialized = True
 
@@ -346,14 +344,14 @@ class SequentialModule(BaseModule):
 
             out_grads = module.get_input_grads()
 
-    def update(self, sparse_pull_dict=None):
+    def update(self):
         """Updates parameters according to installed optimizer and the gradient computed
         in the previous forward-backward cycle.
         """
         assert self.binded and self.params_initialized and self.optimizer_initialized
 
         for module in self._modules:
-            module.update(sparse_pull_dict=None)
+            module.update()
 
     def get_outputs(self, merge_multi_context=True):
         """Gets outputs from a previous forward computation.
