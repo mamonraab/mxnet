@@ -414,7 +414,45 @@ void FCompExFallback(const nnvm::NodeAttrs& attrs,
           << ") == " << param << ".shape[0] (" << rsp.shape()[0] << ").";          \
   }
 
+inline std::string OperatorInfo(const nnvm::NodeAttrs& attrs,
+                                const Context& ctx,
+                                const std::vector<int>& in_attrs,
+                                const std::vector<int>& out_attrs) {
+  std::string result = "";
+  result += "Operator = " + attrs.op->name + "\n";
+  result += "Input storage types = [";
+  for (const auto attr : in_attrs) {
+    result += std::to_string(attr) + ", ";
+  }
+  result += "]\n";
+  result += "Output storage types = [";
+  for (const auto attr : out_attrs) {
+    result += std::to_string(attr) + ", ";
+  }
+  result += "]\n";
+  result += "Params = {";
+  for (auto kv : attrs.dict) {
+    result += "\"" + kv.first + "\" : " + kv.second + ", ";
+  }
+  result += "}\n";
+  result += "Context.dev_mask = " + std::to_string(ctx.dev_mask());
+  return result;
+}
 
+inline std::string OperatorInfoEx(const nnvm::NodeAttrs& attrs,
+                                  const OpContext& ctx,
+                                  const std::vector<NDArray>& inputs,
+                                  const std::vector<OpReqType>& req,
+                                  const std::vector<NDArray>& outputs) {
+  std::string result = "";
+  std::vector<int> in_stypes;
+  std::vector<int> out_stypes;
+  auto xform = [](const NDArray arr) -> int { return arr.storage_type(); };
+  std::transform(inputs.begin(), inputs.end(), std::back_inserter(in_stypes), xform);
+  std::transform(outputs.begin(), outputs.end(), std::back_inserter(out_stypes), xform);
+  result += OperatorInfo(attrs, ctx.run_ctx.ctx, in_stypes, out_stypes);
+  return result;
+}
 }  // namespace op
 }  // namespace mxnet
 #endif  // MXNET_OPERATOR_OPERATOR_COMMON_H_

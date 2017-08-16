@@ -824,28 +824,7 @@ void GraphExecutor::FinishInitGraph(nnvm::Symbol symbol,
                                     Executor* shared_exec,
                                     const nnvm::NodeEntryMap<NDArray>& feed_dict) {
   const auto& idx = g.indexed_graph();
-  // dispatch based on stype per operator
   const auto& vstorage_type = g.GetAttr<StorageTypeVector>("storage_type");
-  StorageTypeVector dispatch_stypes(idx.num_nodes(), kUndefinedStorage);
-  for (size_t nid = 0; nid < idx.num_nodes(); nid++) {
-      const auto& inode = idx[nid];
-      auto num_outputs = inode.source->num_outputs();
-      auto num_inputs = inode.inputs.size();
-      StorageTypeVector vs(num_inputs + num_outputs, kUndefinedStorage);
-      for (size_t i = 0; i < num_inputs; i++) {
-        auto e = inode.inputs[i];
-        vs[i] = vstorage_type[idx.entry_id(e)];
-        CHECK_NE(vs[i], kUndefinedStorage);
-      }
-      for (uint32_t i = 0; i < num_outputs; ++i) {
-        uint32_t eid = idx.entry_id(nid, i);
-        vs[i + num_inputs] = vstorage_type[eid];
-      }
-      bool contains_non_default = common::ContainsNonDefaultStorage(vs);
-      dispatch_stypes[nid] = contains_non_default ? kNonDefaultStorage : kDefaultStorage;
-  }
-  g.attrs["dispatch_stypes"] = std::make_shared<dmlc::any>(std::move(dispatch_stypes));
-
   // data entries for output gradients
   for (size_t j = num_forward_outputs_; j < idx.outputs().size(); ++j) {
     data_entry_[idx.entry_id(idx.outputs()[j])] = grad_store_[j - num_forward_outputs_].second;

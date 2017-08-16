@@ -164,6 +164,7 @@ void IdentityComputeEx(const nnvm::NodeAttrs& attrs,
 
 inline bool IdentityAttrLikeRhsStorageType(const nnvm::NodeAttrs& attrs,
                                            const Context& ctx,
+                                           int* dispatch_type,
                                            std::vector<int> *in_attrs,
                                            std::vector<int> *out_attrs) {
   // TODO(junwu): add ctx info into storage inference logic

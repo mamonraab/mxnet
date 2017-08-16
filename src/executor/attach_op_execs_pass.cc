@@ -248,7 +248,7 @@ Graph AttachOpExecs(Graph g) {
   const auto& vctx = g.GetAttr<ContextVector>("context");
   const auto& saved_states = g.GetAttr<
     std::unordered_map<const nnvm::Node*, OpStatePtr> >("saved_states");
-  const auto& dispatch_stypes = g.GetAttr<StorageTypeVector>("dispatch_stypes");
+  const auto& dispatch_types = g.GetAttr<StorageTypeVector>("dispatch_type");
 
 
   // get the graph
@@ -321,7 +321,7 @@ Graph AttachOpExecs(Graph g) {
     } else {
       FCompute fcompute = common::GetFCompute<FCompute>(op, "FCompute", vctx[i]);
       FComputeEx fcomp_ex = common::GetFCompute<FComputeEx>(op, "FComputeEx", vctx[i]);
-      if (fcomp_ex != nullptr && dispatch_stypes[i] != kDefaultStorage) {
+      if (fcomp_ex != nullptr && dispatch_types[i] == kDispatchFComputeEx) {
         ret[i] = std::make_shared<FComputeExExecutor>(
             inode.source->attrs, fcomp_ex, exec_type);
       } else if (fcompute != nullptr) {
