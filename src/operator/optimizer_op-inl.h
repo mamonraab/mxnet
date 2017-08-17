@@ -292,7 +292,7 @@ inline void SGDUpdateEx(const nnvm::NodeAttrs& attrs,
     NDArray out = outputs[0];
     SGDUpdateRspDnsImpl<xpu>(param, ctx, inputs[0], inputs[1].data(), req[0], &out);
   } else {
-    FCompExFallback<xpu>(attrs, ctx, inputs, req, outputs, SGDUpdate<xpu>, "SGDUpdate");
+    LOG(FATAL) << "Not implemented: " << OperatorInfoEx(attrs, ctx, inputs, req, outputs);
   }
 }
 
@@ -686,9 +686,7 @@ inline void SGDMomUpdateEx(const nnvm::NodeAttrs& attrs,
      NDArray out = outputs[0];
      SGDMomUpdateRspDnsImpl<xpu>(param, ctx, weight, grad.data(), mom, req[0], &out);
   } else {
-    // inputs[2] is a mutable input
-    FCompExFallback<xpu>(attrs, ctx, inputs, req, outputs,
-                         SGDMomUpdate<xpu>, "SGDMomUpdate", {2});
+    LOG(FATAL) << "Not implemented: " << OperatorInfoEx(attrs, ctx, inputs, req, outputs);
   }
 }
 

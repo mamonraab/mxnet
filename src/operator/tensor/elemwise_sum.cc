@@ -98,8 +98,7 @@ void ElementWiseSumComputeExCPU(const nnvm::NodeAttrs& attrs,
   if (inputs[0].storage_type() == kRowSparseStorage) {
     mxnet::ndarray::ElementwiseSum<cpu>(s, inputs, &out_nd);
   } else {
-    FCompExFallback<cpu>(attrs, ctx, inputs, req, outputs,
-                         ElementWiseSumCompute<cpu>, "ElementWiseSumCompute<cpu>");
+    LOG(FATAL) << "Not implemented: " << OperatorInfoEx(attrs, ctx, inputs, req, outputs);
   }
 }
 

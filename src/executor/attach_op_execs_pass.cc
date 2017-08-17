@@ -248,7 +248,7 @@ Graph AttachOpExecs(Graph g) {
   const auto& vctx = g.GetAttr<ContextVector>("context");
   const auto& saved_states = g.GetAttr<
     std::unordered_map<const nnvm::Node*, OpStatePtr> >("saved_states");
-  const auto& dispatch_types = g.GetAttr<StorageTypeVector>("dispatch_type");
+  const auto& dispatch_types = g.GetAttr<DispatchTypeVector>("dispatch_type");
 
 
   // get the graph
@@ -268,7 +268,7 @@ Graph AttachOpExecs(Graph g) {
     if (fexec_type.count(op)) {
       exec_type = fexec_type[op](inode.source->attrs);
     }
-
+    CHECK_NE(dispatch_types[i], kDispatchUndefined);
     if (fcreate_op_state.count(op)) {
       std::vector<TShape> ishape;
       std::vector<int> itype;

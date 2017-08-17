@@ -34,6 +34,7 @@
 #include "./c_api_common.h"
 #include "../common/utils.h"
 #include "../ndarray/autograd.h"
+#include "../executor/exec_pass.h"
 
 using namespace mxnet;
 using mxnet::autograd::AutogradRuntime;
@@ -215,6 +216,7 @@ void SetShapeType(const nnvm::Op* op,
                                    &in_storage_types, &out_storage_types));
   }
   CHECK_EQ(out_storage_types.size(), ndoutputs.size());
+  CHECK_NE(*dispatch_type, kDispatchUndefined);
 
   for (size_t i = 0; i < ndoutputs.size(); ++i) {
     NDArrayStorageType storage_type = static_cast<NDArrayStorageType>(out_storage_types[i]);
@@ -245,7 +247,8 @@ void SetDependency(std::vector<engine::VarHandle> *p_read_vars,
                    const nnvm::NodeAttrs& attrs,
                    const Context& ctx,
                    const std::vector<NDArray>& ndinputs,
-                   const std::vector<NDArray>& ndoutputs) {
+                   const std::vector<NDArray>& ndoutputs,
+                   const int dispatch_type) {
   static auto& mutate = nnvm::Op::GetAttr<nnvm::FMutateInputs>("FMutateInputs");
   static auto& tmp_resource = nnvm::Op::GetAttr<FResourceRequest>("FResourceRequest");
 
@@ -256,7 +259,12 @@ void SetDependency(std::vector<engine::VarHandle> *p_read_vars,
 
   if (tmp_resource.count(op)) {
     int ntmp = 0;
-    for (const auto& req : tmp_resource[op](attrs)) {
+    auto requests = tmp_resource[op](attrs);
+    // extra resource request for storage fallback
+    if (dispatch_type == kDispatchFComputeFallback) {
+      requests.push_back(ResourceRequest::kTempSpace);
+    }
+    for (const auto& req : requests) {
       switch (req.type) {
        case ResourceRequest::kTempSpace:
         ++ntmp;
@@ -507,7 +515,7 @@ void ImperativeInvokeImpl(const Context& default_ctx,
     std::vector<Resource> requested;
     std::vector<uint32_t> mutate_idx;
     SetDependency(&read_vars, &write_vars, &requested, &mutate_idx,
-        op, attrs, ctx, ndinputs, ndoutputs);
+        op, attrs, ctx, ndinputs, ndoutputs, dispatch_type);
 
     FCompute fn = common::GetFCompute<FCompute>(op, "FCompute", ctx);
     FComputeEx fn_ex = common::GetFCompute<FComputeEx>(op, "FComputeEx", ctx);
