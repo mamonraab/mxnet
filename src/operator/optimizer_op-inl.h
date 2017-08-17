@@ -90,7 +90,7 @@ inline bool SGDUpdateStorageType(const nnvm::NodeAttrs& attrs,
   }
   if (fallback) {
     type_assign(&out_stype, kDefaultStorage);
-    LOG(INFO) << "Storage fallback detected.\n" << OperatorInfo(attrs, ctx, *in_attrs, *out_attrs);
+    FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
 }
@@ -352,7 +352,7 @@ inline bool SGDMomUpdateStorageType(const nnvm::NodeAttrs& attrs,
   }
   if (fallback) {
     type_assign(&out_stype, kDefaultStorage);
-    LOG(INFO) << "Storage fallback detected.\n" << OperatorInfo(attrs, ctx, *in_attrs, *out_attrs);
+    FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
 }
@@ -757,7 +757,7 @@ inline bool AdamUpdateStorageType(const nnvm::NodeAttrs& attrs,
   }
   if (fallback) {
     type_assign(&out_stype, kDefaultStorage);
-    LOG(INFO) << "Storage fallback detected.\n" << OperatorInfo(attrs, ctx, *in_attrs, *out_attrs);
+    FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
 }

@@ -236,8 +236,7 @@ inline bool DotForwardInferStorageType(const nnvm::NodeAttrs& attrs,
   if (fallback) {
     type_assign(&out_stype, kDefaultStorage);
     TYPE_ASSIGN_CHECK(dispatch_type, 0, kDispatchFComputeFallback);
-    LOG(INFO) << "Storage fallback detected: "
-              << OperatorInfo(attrs, ctx, *in_attrs, *out_attrs);
+    FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
 }
@@ -285,8 +284,7 @@ inline bool DotBackwardInferStorageType(const nnvm::NodeAttrs& attrs,
     type_assign(&lhs_grad_stype, kDefaultStorage);
     type_assign(&rhs_grad_stype, kDefaultStorage);
     TYPE_ASSIGN_CHECK(dispatch_type, 0, kDispatchFComputeFallback);
-    LOG(INFO) << "Storage fallback detected: "
-              << OperatorInfo(attrs, ctx, *in_attrs, *out_attrs);
+    FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
 }

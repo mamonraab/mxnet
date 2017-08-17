@@ -48,7 +48,9 @@ bool ApplyOpInferAttr<int, FInferStorageType>(const nnvm::Graph& g,
                                               std::vector<int>* in_attrs,
                                               std::vector<int>* out_attrs) {
   const ContextVector& ctxes = g.GetAttr<ContextVector>("context");
-  return finfer(attrs, ctxes[nid], in_attrs, out_attrs);
+  const DispatchTypeVector& dispatches = g.GetAttr<DispatchTypeVector>("dispatch_type");
+  int* dispatch = (int*) &dispatches[nid]; // NOLINT(*)
+  return finfer(attrs, ctxes[nid], dispatch, in_attrs, out_attrs);
 }
 
 /*!\brief
@@ -302,8 +304,7 @@ inline bool DefaultStorageType(const nnvm::NodeAttrs& attrs,
   if (*dispatch_type == -1) {
     if (fallback) {
       *dispatch_type = kDispatchFComputeFallback;
-      LOG(INFO) << "Storage fallback detected.\n"
-                << op::OperatorInfo(attrs, ctx, *iattr, *oattr);
+      FALLBACK_WARNING(attrs, ctx, iattr, oattr);
     } else {
       *dispatch_type = kDispatchFCompute;
     }
