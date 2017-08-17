@@ -90,6 +90,7 @@ inline bool SGDUpdateStorageType(const nnvm::NodeAttrs& attrs,
   }
   if (fallback) {
     type_assign(&out_stype, kDefaultStorage);
+    type_assign(dispatch_type, kDispatchFComputeFallback);
     FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
@@ -352,6 +353,7 @@ inline bool SGDMomUpdateStorageType(const nnvm::NodeAttrs& attrs,
   }
   if (fallback) {
     type_assign(&out_stype, kDefaultStorage);
+    type_assign(dispatch_type, kDispatchFComputeFallback);
     FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
@@ -755,6 +757,7 @@ inline bool AdamUpdateStorageType(const nnvm::NodeAttrs& attrs,
   }
   if (fallback) {
     type_assign(&out_stype, kDefaultStorage);
+    type_assign(dispatch_type, kDispatchFComputeFallback);
     FALLBACK_WARNING(attrs, ctx, in_attrs, out_attrs);
   }
   return true;
